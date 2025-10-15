@@ -1,0 +1,60 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* 自定义样式 */
+.chat-container {
+  height: calc(100vh - 120px);
+}
+
+.message-bubble {
+  @apply max-w-xs lg:max-w-md px-4 py-2 rounded-lg text-sm;
+}
+
+.message-user {
+  @apply bg-blue-500 text-white ml-auto;
+}
+
+.message-ai {
+  @apply bg-gray-200 text-gray-800 mr-auto;
+}
+
+.message-tool {
+  @apply bg-yellow-100 text-yellow-800 mr-auto border border-yellow-300;
+}
+
+.message-system {
+  @apply bg-green-100 text-green-800 mr-auto border border-green-300;
+}
+
+/* 图形可视化样式 */
+.graph-container {
+  border: 1px solid #e5e7eb;
+  border-radius: 0.5rem;
+  background: #fafafa;
+}
+
+/* 工具调用样式 */
+.tool-call {
+  @apply bg-amber-50 border border-amber-200 rounded-md p-3 mt-2;
+}
+
+.tool-result {
+  @apply bg-emerald-50 border border-emerald-200 rounded-md p-3 mt-2;
+}
+
+/* 加载动画 */
+.loading-dots {
+  display: inline-block;
+}
+
+.loading-dots::after {
+  content: '';
+  animation: loading 1.5s infinite;
+}
+
+@keyframes loading {
+  0%, 20% { content: '.'; }
+  40% { content: '..'; }
+  60%, 100% { content: '...'; }
+}
