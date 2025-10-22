@@ -14,11 +14,11 @@
 defineProps({
   title: {
     type: String,
-    default: '中小学科学教育智能导师'
+    default: '故障检测智能体'
   },
   subtitle: {
     type: String,
-    default: 'Science Education Intelligent Tutor'
+    default: ''
   }
 })
 </script>

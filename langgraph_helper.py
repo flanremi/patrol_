@@ -15,14 +15,15 @@ llm = ChatOpenAI(
     base_url=os.getenv('OPENAI_BASE_URL'), # 确保在 .env 中设置 OPENAI_BASE_URL
     api_key="123", # 推荐从环境变量获取 API Key
     temperature=0.7,
-    max_tokens=1000
+    max_tokens=10000
 )
 
 class common_llm:
 
-    def __init__(self, prompt: str):
+    def __init__(self, prompt: str, additional: str = ""):
         super().__init__()
         self.prompt = prompt
+        self.additional = additional
 
 
     def __call__(self, state):

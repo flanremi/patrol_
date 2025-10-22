@@ -26,10 +26,10 @@
           </div>
 
           <h1 class="text-[32px] font-bold text-gray-900 mb-3 tracking-tight">
-            中小学科学教育智能导师
+            故障检测智能体
           </h1>
           <p class="text-[16px] text-gray-600 leading-relaxed max-w-md mx-auto">
-            通过探究式学习，激发好奇心，培养科学思维
+            故障检查系统
           </p>
         </div>
 
@@ -193,7 +193,7 @@
             v-model="inputMessage"
             @keydown.enter.exact.prevent="sendMessage"
             :disabled="loading || isReplaying"
-            :placeholder="isReplaying ? '正在回放对话，请稍候...' : '输入你的问题，开启科学探索之旅...'"
+            :placeholder="isReplaying ? '正在回放对话，请稍候...' : '输入你的问题，开启故障分析检测...'"
             class="w-full resize-none rounded-2xl bg-white border-2 border-blue-200 px-5 py-3.5 pr-28 text-[15px] text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 disabled:bg-gray-50 disabled:text-gray-400 transition-all leading-[1.5] shadow-sm"
             style="max-height: 200px; height: 57px"
           />
