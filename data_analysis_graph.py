@@ -608,12 +608,7 @@ def looseness_analysis(content: str) -> str:
         for idx, image in enumerate(screw_imgs):
             image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
 
-            # #debug
-            # image_rgb = cv2.cvtColor(image_rgb, cv2.COLOR_RGB2GRAY)
-            # image_rgb = cv2.cvtColor(image_rgb, cv2.COLOR_GRAY2RGB)
-
             image_rgb = Image.fromarray(image_rgb)
-
             input_tensor = preprocess(image_rgb).unsqueeze(0).to(device)  # 添加批次维度
     
             # 推理
