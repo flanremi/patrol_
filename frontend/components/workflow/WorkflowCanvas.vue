@@ -1030,9 +1030,159 @@ const getNodeColor = (node) => {
 }
 
 // —— 区域检测与重排 ——
-// 使用当前的 nodes.value / edges.value（已过处理与布局）来识别“从起点到汇聚”的区域，
-// 然后按区域将节点块顺序排布，提高逻辑分段的可读性。
+// 根据节点name中包含"智能体"的节点来划分阶段，一个智能体就是一个阶段
 const detectAndRecomposeRegions = () => {
+  if (!nodes.value || nodes.value.length === 0 || !edges.value) return
+
+  // 构建度信息和邻接表
+  const indegree = new Map()
+  const outdegree = new Map()
+  const idToNode = new Map(nodes.value.map(n => [n.id, n]))
+
+  nodes.value.forEach(n => {
+    indegree.set(n.id, 0)
+    outdegree.set(n.id, 0)
+  })
+  edges.value.forEach(e => {
+    const s = e.source
+    const t = e.target
+    if (idToNode.has(s) && idToNode.has(t)) {
+      indegree.set(t, (indegree.get(t) || 0) + 1)
+      outdegree.set(s, (outdegree.get(s) || 0) + 1)
+    }
+  })
+
+  const adjacency = new Map()
+  nodes.value.forEach(n => adjacency.set(n.id, []))
+  edges.value.forEach(e => {
+    if (adjacency.has(e.source)) adjacency.get(e.source).push(e.target)
+  })
+
+  // 检查节点name是否包含"智能体"
+  const isAgentNode = (node) => {
+    return node.data?.name && node.data.name.includes('智能体')
+  }
+
+  // 找到所有智能体节点
+  const agentNodes = nodes.value.filter(isAgentNode)
+  
+  if (agentNodes.length === 0) {
+    // 如果没有智能体节点，使用原来的逻辑
+    return detectAndRecomposeRegionsOriginal()
+  }
+
+  // 拓扑排序
+  const indegreeCopy = new Map(indegree)
+  const queue = []
+  nodes.value.forEach(n => {
+    if ((indegreeCopy.get(n.id) || 0) === 0) queue.push(n.id)
+  })
+
+  const topo = []
+  while (queue.length) {
+    const u = queue.shift()
+    topo.push(u)
+    const outs = adjacency.get(u) || []
+    outs.forEach(v => {
+      if (!indegreeCopy.has(v)) return
+      indegreeCopy.set(v, (indegreeCopy.get(v) || 0) - 1)
+      if ((indegreeCopy.get(v) || 0) === 0) queue.push(v)
+    })
+  }
+
+  if (topo.length === 0) return
+
+  // 为每个智能体节点创建阶段
+  const regions = []
+  const processedNodes = new Set()
+
+  // 按拓扑顺序处理节点
+  topo.forEach(nodeId => {
+    const node = idToNode.get(nodeId)
+    if (!node || processedNodes.has(nodeId)) return
+
+    // 如果是智能体节点，创建一个新阶段
+    if (isAgentNode(node)) {
+      const regionNodes = new Set([nodeId])
+      processedNodes.add(nodeId)
+
+      // 收集该智能体节点及其后续节点，直到遇到下一个智能体节点或结束
+      const collectNodesForAgent = (currentNodeId) => {
+        const outs = adjacency.get(currentNodeId) || []
+        
+        for (const nextNodeId of outs) {
+          if (processedNodes.has(nextNodeId)) continue
+          
+          const nextNode = idToNode.get(nextNodeId)
+          if (!nextNode) continue
+
+          // 如果遇到下一个智能体节点，停止收集
+          if (isAgentNode(nextNode)) {
+            break
+          }
+
+          // 添加到当前阶段
+          regionNodes.add(nextNodeId)
+          processedNodes.add(nextNodeId)
+
+          // 递归收集后续节点
+          collectNodesForAgent(nextNodeId)
+        }
+      }
+
+      // 收集该智能体的所有相关节点
+      collectNodesForAgent(nodeId)
+      
+      // 将阶段添加到区域列表
+      regions.push(Array.from(regionNodes))
+    }
+  })
+
+  // 处理剩余的未处理节点（没有智能体的部分）
+  const remainingNodes = topo.filter(id => !processedNodes.has(id))
+  
+  // 如果还有未处理的节点，尝试将它们合并到第一个智能体阶段中
+  if (remainingNodes.length > 0 && regions.length > 0) {
+    // 检查剩余节点是否都是start节点
+    const remainingNodeTypes = remainingNodes.map(id => {
+      const node = idToNode.get(id)
+      return node?.data?.type || 'default'
+    })
+    
+    const allStartNodes = remainingNodeTypes.every(type => type === 'start')
+    
+    if (allStartNodes && remainingNodes.length === 1) {
+      // 如果只有一个start节点，将其合并到第一个智能体阶段中
+      const firstRegion = regions[0]
+      firstRegion.unshift(remainingNodes[0])
+      processedNodes.add(remainingNodes[0])
+    } else if (!allStartNodes || remainingNodes.length > 1) {
+      // 如果有非start节点或多个节点，创建独立阶段
+      regions.push(remainingNodes)
+    }
+  } else if (remainingNodes.length > 0 && regions.length === 0) {
+    // 如果没有智能体节点，但有剩余节点，检查是否需要创建阶段
+    const remainingNodeTypes = remainingNodes.map(id => {
+      const node = idToNode.get(id)
+      return node?.data?.type || 'default'
+    })
+    
+    const hasNonStartNodes = remainingNodeTypes.some(type => type !== 'start')
+    const hasMultipleNodes = remainingNodes.length > 1
+    
+    if (hasNonStartNodes || hasMultipleNodes) {
+      regions.push(remainingNodes)
+    }
+  }
+
+  if (regions.length <= 0) return
+
+  // 应用区域布局
+  applyRegionLayout(regions)
+}
+
+// 原来的区域检测逻辑（作为备用方案）
+const detectAndRecomposeRegionsOriginal = () => {
   if (!nodes.value || nodes.value.length === 0 || !edges.value) return
 
   // 构建度信息
@@ -1084,7 +1234,7 @@ const detectAndRecomposeRegions = () => {
 
   if (topo.length === 0) return
 
-  // 为“分支-收束”区域识别做准备：
+  // 为"分支-收束"区域识别做准备：
   // 1) topoIndex: 用于选择最早出现的共同可达节点
   // 2) 可达性计算：从每个子分支做 BFS，求交集得到共同可达集合
   const topoIndex = new Map()
@@ -1117,7 +1267,7 @@ const detectAndRecomposeRegions = () => {
       if (common.size === 0) break
     }
     if (common.size === 0) return null
-    // 优先选择 indegree>=2 的节点作为“收束”候选
+    // 优先选择 indegree>=2 的节点作为"收束"候选
     const candidates = [...common].filter(id => (indegree.get(id) || 0) >= 2)
     const pool = candidates.length > 0 ? candidates : [...common]
     // 选择拓扑序最靠前的节点
@@ -1134,9 +1284,9 @@ const detectAndRecomposeRegions = () => {
   }
 
   // 根据增强规则划分区域：
-  // - 当遇到多出边的“分支”节点时，计算其所有直接子节点的共同可达首个节点，
+  // - 当遇到多出边的"分支"节点时，计算其所有直接子节点的共同可达首个节点，
   //   将当前区域延伸到该节点之前（不包含该节点）。
-  // - 在受控“分支-收束”期间，忽略其他非目标的汇聚节点，不提前截断区域。
+  // - 在受控"分支-收束"期间，忽略其他非目标的汇聚节点，不提前截断区域。
   const regions = []
   let currentRegionSet = new Set()
   let convergenceTarget = null
@@ -1151,7 +1301,7 @@ const detectAndRecomposeRegions = () => {
     const node = idToNode.get(id)
     if (!node) return
 
-    // 新起点前收束已有区域（仅当当前没有进行“分支-收束”跟踪时）
+    // 新起点前收束已有区域（仅当当前没有进行"分支-收束"跟踪时）
     if (!convergenceTarget && isStartNode(node) && currentRegionSet.size > 0) {
       pushRegionIfAny()
     }
@@ -1162,7 +1312,7 @@ const detectAndRecomposeRegions = () => {
       convergenceTarget = null
       // 继续处理该节点（可作为下一区域的起点）
     } else if (!convergenceTarget && (isJoinNode(node) || isEndNode(node))) {
-      // 未处于受控“分支-收束”阶段时，普通的汇聚/结束节点作为边界（不包含该节点）
+      // 未处于受控"分支-收束"阶段时，普通的汇聚/结束节点作为边界（不包含该节点）
       pushRegionIfAny()
     }
 
@@ -1182,11 +1332,20 @@ const detectAndRecomposeRegions = () => {
 
   if (regions.length <= 0) return
 
+  // 应用区域布局
+  applyRegionLayout(regions)
+}
+
+// 应用区域布局的通用函数
+const applyRegionLayout = (regions) => {
   // 计算每个区域的包围盒
   const GAP_X = props.layoutConfig?.regionGapX || 20 // 区域水平间距（可配置）
   const GAP_Y = props.layoutConfig?.regionGapY || 20 // 区域垂直间距（可配置）
   const BASE_MARGIN_X = (props.layoutConfig?.marginx || 20)
   const BASE_MARGIN_Y = (props.layoutConfig?.marginy || 20)
+
+  // 构建节点映射
+  const idToNode = new Map(nodes.value.map(n => [n.id, n]))
 
   // 计算每个区域的当前包围盒
   const regionBoxes = regions.map(regionIds => {

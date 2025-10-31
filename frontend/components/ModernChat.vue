@@ -326,15 +326,7 @@ const inputMessage = ref('')
 const messagesContainer = ref(null)
 const inputRef = ref(null)
 
-// 快捷建议 - 加载预设对话文件
-const suggestions = ref([
-  {
-    icon: '🔬',
-    title: '铁为什么会生锈？',
-    description: '探索金属氧化的化学原理和生活中的防锈方法',
-    file: '铁为什么会生锈.json',
-  },
-])
+
 
 // 回放状态
 const isReplaying = ref(false)
