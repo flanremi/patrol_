@@ -36,14 +36,108 @@ logging.getLogger("neo4j").setLevel(logging.ERROR)
 
 # 配置信息
 load_dotenv()
-graph = Neo4jGraph()
-GRAPH_HTML_PATH = "zhongche_kg_visualization.html"
-GRAPH_DATA_PATH = "zhongche_graph_documents.pkl"
+# Neo4j 连接配置
+neo4j_uri_raw = os.getenv("NEO4J_URI", "neo4j://127.0.0.1:7687")
+neo4j_username = os.getenv("NEO4J_USERNAME", "neo4j")
+neo4j_password = os.getenv("NEO4J_PASSWORD", "12345678")
+
+# 处理URI协议：neo4j:// 用于集群路由，单机版应使用 bolt://
+# 如果用户提供的是 neo4j://，尝试转换为 bolt://
+if neo4j_uri_raw.startswith("neo4j://"):
+    # 提取主机和端口
+    host_port = neo4j_uri_raw.replace("neo4j://", "")
+    neo4j_uri = f"bolt://{host_port}"
+    print(f"⚠️  检测到 neo4j:// 协议，已自动转换为 bolt:// ({neo4j_uri})")
+    print(f"   提示：单机版Neo4j应使用 bolt:// 协议")
+else:
+    neo4j_uri = neo4j_uri_raw
+
+print(f"🔌 正在连接 Neo4j...")
+print(f"   URI: {neo4j_uri}")
+print(f"   用户名: {neo4j_username}")
+
+try:
+    graph = Neo4jGraph(
+        url=neo4j_uri,
+        username=neo4j_username,
+        password=neo4j_password
+    )
+    print(f"✅ Neo4j 连接成功！")
+    
+    # 检查并创建全文索引（如果不存在）
+    print(f"🔍 检查全文索引...")
+    try:
+        # 检查索引是否存在
+        check_index_query = """
+        SHOW INDEXES
+        YIELD name, type, state, populationPercent
+        WHERE name = 'entity' AND type = 'FULLTEXT'
+        RETURN count(*) as exists
+        """
+        result = graph.query(check_index_query)
+        index_exists = result[0]['exists'] > 0 if result else False
+        
+        if not index_exists:
+            print(f"📝 创建全文索引 'entity'...")
+            # 先检查实体节点的标签和属性
+            try:
+                check_nodes_query = """
+                MATCH (n)
+                WHERE n:__Entity__ OR n:Entity OR 'Entity' IN labels(n)
+                WITH n LIMIT 1
+                RETURN labels(n) as labels, keys(n) as keys
+                """
+                node_info = graph.query(check_nodes_query)
+                
+                if node_info:
+                    labels = node_info[0].get('labels', [])
+                    keys = node_info[0].get('keys', [])
+                    print(f"   发现实体节点标签：{labels}")
+                    print(f"   发现实体节点属性：{keys}")
+                    
+                    # 确定用于索引的属性（优先使用id，其次使用name）
+                    index_property = 'id' if 'id' in keys else ('name' if 'name' in keys else keys[0] if keys else 'id')
+                    entity_label = labels[0] if labels else '__Entity__'
+                    
+                    # 创建全文索引
+                    create_index_query = f"""
+                    CREATE FULLTEXT INDEX entity IF NOT EXISTS
+                    FOR (n:`{entity_label}`)
+                    ON EACH [n.{index_property}]
+                    """
+                    graph.query(create_index_query)
+                    print(f"✅ 全文索引 'entity' 创建成功！")
+                    print(f"   索引标签：{entity_label}")
+                    print(f"   索引属性：{index_property}")
+                else:
+                    print(f"⚠️  未找到实体节点，索引将在首次导入数据后创建")
+            except Exception as idx_e:
+                print(f"⚠️  索引创建失败：{idx_e}")
+                print(f"   提示：将在首次查询时使用降级方案，或手动创建索引")
+                print(f"   手动创建索引命令：")
+                print(f"   CREATE FULLTEXT INDEX entity FOR (n:__Entity__) ON EACH [n.id]")
+        else:
+            print(f"✅ 全文索引 'entity' 已存在")
+    except Exception as idx_check_e:
+        print(f"⚠️  索引检查失败：{idx_check_e}")
+        print(f"   提示：将在首次查询时使用降级方案")
+        
+except Exception as e:
+    print(f"❌ Neo4j 连接失败：{str(e)}")
+    print(f"\n📋 故障排查建议：")
+    print(f"   1. 确认Neo4j服务已启动")
+    print(f"   2. 检查连接URI是否正确（单机版使用 bolt://127.0.0.1:7687）")
+    print(f"   3. 验证用户名和密码是否正确")
+    print(f"   4. 检查防火墙是否阻止了7687端口")
+    print(f"   5. 查看Neo4j日志文件获取详细错误信息")
+    raise
+GRAPH_HTML_PATH = "D:\git\patrol_\inspection_analysis_demo\zhongche_kg_visualization.html"
+GRAPH_DATA_PATH = "D:\git\patrol_\inspection_analysis_demo\zhongche_graph_documents.pkl"
 
 # LLM模型初始化
-base_url = os.getenv("OPENAI_API_URL")
+base_url = os.getenv("OPENAI_BASE_URL")
 api_key = os.getenv("OPENAI_API_KEY")
-model_name = os.getenv("OPENAI_API_MODEL")
+model_name = os.getenv("OPENAI_MODEL")
 llm = ChatOpenAI(
     base_url=base_url,
     api_key=api_key,
@@ -56,14 +150,25 @@ embeddings = OllamaEmbeddings(
     base_url="http://localhost:11434",
 )
 
-vector_index = Neo4jVector.from_existing_graph(
-    embeddings,
-    search_type="hybrid",
-    node_label="Document",
-    text_node_properties=["text"],
-    embedding_node_property="embedding"
-)
-vector_retriever = vector_index.as_retriever()
+try:
+    vector_index = Neo4jVector.from_existing_graph(
+        embeddings,
+        url=neo4j_uri,
+        username=neo4j_username,
+        password=neo4j_password,
+        search_type="hybrid",
+        node_label="Document",
+        text_node_properties=["text"],
+        embedding_node_property="embedding"
+    )
+    print(f"✅ Neo4jVector 初始化成功！")
+    vector_retriever = vector_index.as_retriever()
+except Exception as e:
+    print(f"⚠️  Neo4jVector 初始化失败：{str(e)}")
+    print(f"   提示：如果数据库为空，这是正常的。首次运行时会自动创建向量索引。")
+    # 创建一个空的retriever，避免后续调用出错
+    vector_index = None
+    vector_retriever = None
 
 # 知识图谱写入Neo4j
 with open(GRAPH_DATA_PATH, "rb") as f:
@@ -149,30 +254,70 @@ def graph_retriever(question: str) -> str:
     try:
         entities = entity_chain.invoke({"question": question})
         for entity in entities.names:
-            cypher_query = """
-            CALL db.index.fulltext.queryNodes('entity', $query, {limit:2})
-            YIELD node,score
-            CALL (node) { 
-              WITH node
-              MATCH (node)-[r:!MENTIONS]->(neighbor)
-              RETURN node.id + ' - ' + type(r) + ' -> ' + neighbor.id AS output
-              UNION ALL
-              WITH node
-              MATCH (node)<-[r:!MENTIONS]-(neighbor)
-              RETURN neighbor.id + ' - ' + type(r) + ' -> ' +  node.id AS output
-            }
-            RETURN output LIMIT 50
-            """
-            response = graph.query(cypher_query, {"query": generate_full_text_query(entity)})
-            
-            result += "\n".join([el['output'] for el in response])
+            try:
+                # 首先尝试使用全文索引查询
+                cypher_query = """
+                CALL db.index.fulltext.queryNodes('entity', $query, {limit:2})
+                YIELD node,score
+                CALL (node) { 
+                  WITH node
+                  MATCH (node)-[r:!MENTIONS]->(neighbor)
+                  RETURN node.id + ' - ' + type(r) + ' -> ' + neighbor.id AS output
+                  UNION ALL
+                  WITH node
+                  MATCH (node)<-[r:!MENTIONS]-(neighbor)
+                  RETURN neighbor.id + ' - ' + type(r) + ' -> ' +  node.id AS output
+                }
+                RETURN output LIMIT 50
+                """
+                response = graph.query(cypher_query, {"query": generate_full_text_query(entity)})
+                result += "\n".join([el['output'] for el in response])
+            except Exception as idx_error:
+                # 如果全文索引不存在，使用普通查询作为降级方案
+                if "no such fulltext schema index" in str(idx_error).lower():
+                    print(f"⚠️  全文索引不存在，使用降级查询方案（实体：{entity}）")
+                    # 降级查询：直接通过节点属性匹配
+                    fallback_query = """
+                    MATCH (node)
+                    WHERE node.id CONTAINS $entity OR toLower(node.id) CONTAINS toLower($entity)
+                    WITH node LIMIT 5
+                    OPTIONAL MATCH (node)-[r:!MENTIONS]->(neighbor)
+                    WITH node, r, neighbor
+                    WHERE r IS NOT NULL
+                    RETURN node.id + ' - ' + type(r) + ' -> ' + neighbor.id AS output
+                    UNION ALL
+                    MATCH (node)
+                    WHERE node.id CONTAINS $entity OR toLower(node.id) CONTAINS toLower($entity)
+                    WITH node LIMIT 5
+                    OPTIONAL MATCH (node)<-[r:!MENTIONS]-(neighbor)
+                    WITH node, r, neighbor
+                    WHERE r IS NOT NULL
+                    RETURN neighbor.id + ' - ' + type(r) + ' -> ' + node.id AS output
+                    LIMIT 50
+                    """
+                    try:
+                        response = graph.query(fallback_query, {"entity": entity})
+                        result += "\n".join([el['output'] for el in response])
+                    except Exception as fallback_error:
+                        print(f"⚠️  降级查询也失败（实体：{entity}）：{fallback_error}")
+                else:
+                    print(f"⚠️  图谱检索异常（实体：{entity}）：{idx_error}")
     except Exception as e:
-        print(f"图谱检索异常：{e}")
+        print(f"⚠️  实体提取或图谱检索异常：{e}")
     return result
 
 def full_retriever(question: str):
     graph_data = graph_retriever(question)
-    vector_data = [el.page_content for el in vector_retriever.invoke(question)]
+    # 检查vector_retriever是否可用
+    if vector_retriever is not None:
+        try:
+            vector_data = [el.page_content for el in vector_retriever.invoke(question)]
+        except Exception as e:
+            print(f"⚠️  向量检索失败：{e}")
+            vector_data = []
+    else:
+        vector_data = []
+    
     final_data = f"""Graph data:
 {graph_data}
 vector data:
