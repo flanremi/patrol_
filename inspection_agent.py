@@ -29,7 +29,8 @@ import logging
 
 logging.getLogger("neo4j").setLevel(logging.ERROR)
 
-load_dotenv()
+# 从项目根目录加载 .env，保证 RAG_MODE 等配置被正确读取（与 backend 一致）
+load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"))
 
 
 # ===================== 全局 WebSocket 回调 =====================
@@ -85,54 +86,61 @@ class AgentState(TypedDict):
     current_node: Optional[str]
 
 
-# ===================== Neo4j 连接（可选） =====================
+# ===================== Neo4j 连接（可选，仅 graph 模式） =====================
+# vector 模式下不连接 Neo4j，与 backend / rag_config 使用同一 RAG_MODE
 graph_db = None
 vector_retriever = None
 
-try:
-    from langchain_neo4j import Neo4jGraph
-    from langchain_community.vectorstores import Neo4jVector
-    from langchain_ollama import OllamaEmbeddings
-    from langchain_neo4j.vectorstores.neo4j_vector import remove_lucene_chars
+def _is_vector_rag_mode() -> bool:
+    from rag_config import RAG_MODE
+    return RAG_MODE == "vector"
 
-    neo4j_uri = os.getenv("NEO4J_URI", "bolt://127.0.0.1:7687")
-    neo4j_username = os.getenv("NEO4J_USERNAME", "neo4j")
-    neo4j_password = os.getenv("NEO4J_PASSWORD", "12345678")
-
-    if neo4j_uri.startswith("neo4j://"):
-        neo4j_uri = neo4j_uri.replace("neo4j://", "bolt://")
-
-    print(f"🔌 尝试连接 Neo4j: {neo4j_uri}")
-    graph_db = Neo4jGraph(
-        url=neo4j_uri,
-        username=neo4j_username,
-        password=neo4j_password
-    )
-    print("✅ Neo4j 连接成功！")
-
-    # 尝试初始化向量检索
+if not _is_vector_rag_mode():
     try:
-        embeddings = OllamaEmbeddings(
-            model="mxbai-embed-large:latest",
-            base_url="http://localhost:11434",
-        )
-        vector_index = Neo4jVector.from_existing_graph(
-            embeddings,
+        from langchain_neo4j import Neo4jGraph
+        from langchain_community.vectorstores import Neo4jVector
+        from langchain_ollama import OllamaEmbeddings
+        from langchain_neo4j.vectorstores.neo4j_vector import remove_lucene_chars
+
+        neo4j_uri = os.getenv("NEO4J_URI", "bolt://127.0.0.1:7687")
+        neo4j_username = os.getenv("NEO4J_USERNAME", "neo4j")
+        neo4j_password = os.getenv("NEO4J_PASSWORD", "12345678")
+
+        if neo4j_uri.startswith("neo4j://"):
+            neo4j_uri = neo4j_uri.replace("neo4j://", "bolt://")
+
+        print(f"🔌 尝试连接 Neo4j: {neo4j_uri}")
+        graph_db = Neo4jGraph(
             url=neo4j_uri,
             username=neo4j_username,
-            password=neo4j_password,
-            search_type="hybrid",
-            node_label="Document",
-            text_node_properties=["text"],
-            embedding_node_property="embedding"
+            password=neo4j_password
         )
-        vector_retriever = vector_index.as_retriever()
-        print("✅ 向量检索初始化成功！")
-    except Exception as e:
-        print(f"⚠️ 向量检索初始化失败: {e}")
+        print("✅ Neo4j 连接成功！")
 
-except Exception as e:
-    print(f"⚠️ Neo4j 连接失败（将使用模拟数据）: {e}")
+        try:
+            embeddings = OllamaEmbeddings(
+                model="mxbai-embed-large:latest",
+                base_url="http://localhost:11434",
+            )
+            vector_index = Neo4jVector.from_existing_graph(
+                embeddings,
+                url=neo4j_uri,
+                username=neo4j_username,
+                password=neo4j_password,
+                search_type="hybrid",
+                node_label="Document",
+                text_node_properties=["text"],
+                embedding_node_property="embedding"
+            )
+            vector_retriever = vector_index.as_retriever()
+            print("✅ 向量检索初始化成功！")
+        except Exception as e:
+            print(f"⚠️ 向量检索初始化失败: {e}")
+
+    except Exception as e:
+        print(f"⚠️ Neo4j 连接失败（将使用模拟数据）: {e}")
+else:
+    print("📌 RAG_MODE=vector，跳过 Neo4j 连接")
 
 
 # ===================== LLM 初始化 =====================
@@ -180,7 +188,7 @@ def generate_full_text_query(input_text: str) -> str:
 
 
 def graph_retriever(question: str) -> str:
-    """基于问题检索 Neo4j 图谱中的关系"""
+    """基于问题检索 Neo4j 图谱中的关系。这里涉及RAG（图谱检索）。"""
     if graph_db is None:
         return "【模拟数据】未连接知识图谱，返回模拟检索结果。"
 
@@ -199,13 +207,21 @@ def graph_retriever(question: str) -> str:
         print(f"⚠️ 图谱检索异常: {e}")
         result = f"检索异常: {e}"
 
-    return result if result else "未找到相关图谱数据"
+    result = result if result else "未找到相关图谱数据"
+    # RAG：将图谱检索结果输出到控制台
+    print("\n" + "=" * 60 + "\n[RAG] 图谱检索 (inspection_agent)")
+    print(f"[RAG] 检索 query: {question}")
+    print(f"[RAG] 图谱检索结果长度: {len(result)} 字符")
+    print("[RAG] 图谱检索结果内容:\n" + result + "\n" + "=" * 60)
+    return result
 
 
 def full_retriever(question: str) -> str:
-    """混合检索（图谱 + 向量）"""
+    """混合检索（图谱 + 向量）。这里涉及RAG（混合检索）。"""
+    # 这里涉及RAG：图谱检索
     graph_data = graph_retriever(question)
 
+    # 这里涉及RAG：向量检索
     vector_data = []
     if vector_retriever is not None:
         try:
@@ -213,12 +229,18 @@ def full_retriever(question: str) -> str:
         except Exception as e:
             print(f"⚠️ 向量检索失败: {e}")
 
-    return f"""图谱数据:
+    combined = f"""图谱数据:
 {graph_data}
 
 向量数据:
 {"#Document ".join(vector_data) if vector_data else "无向量检索结果"}
 """
+    # RAG：将混合检索结果输出到控制台
+    print("\n" + "=" * 60 + "\n[RAG] 混合检索（图谱 + 向量） (inspection_agent)")
+    print(f"[RAG] 检索 query: {question}")
+    print(f"[RAG] 图谱部分长度: {len(graph_data)} 字符, 向量文档数: {len(vector_data)}")
+    print("[RAG] 混合检索结果全文:\n" + combined + "=" * 60 + "\n")
+    return combined
 
 
 # ===================== 工具定义 =====================
@@ -377,20 +399,25 @@ async def _run_analysis_task(callback, part_name: str, defect_type: str, part_po
         })
         
         try:
-            # 导入故障分析核心模块
-            from fault_analysis_core import run_fault_analysis_async, initialize
-            
-            # 初始化模块
+            # 根据 RAG_MODE 选择故障分析模块：graph=知识图谱+向量，vector=纯向量文档 RAG
+            rag_mode = os.getenv("RAG_MODE", "graph").strip().lower()
+            if rag_mode not in ("graph", "vector"):
+                rag_mode = "graph"
+            if rag_mode == "vector":
+                from fault_analysis_core_vector import run_fault_analysis_async, initialize
+                init_msg = "请检查向量数据库与 LLM 配置"
+            else:
+                from fault_analysis_core import run_fault_analysis_async, initialize
+                init_msg = "请检查 Neo4j 连接和 LLM 配置"
+
             if not initialize():
                 await callback("tool", "analysis_error", {
                     "error": "故障分析模块初始化失败",
-                    "message": "请检查 Neo4j 连接和 LLM 配置"
+                    "message": init_msg
                 })
-                # 使用简化分析
                 await _run_simplified_analysis(callback, part_name, defect_type, part_position, detect_time, detect_confidence)
                 return
-            
-            # 执行异步分析，直接与前端交互
+
             result = await run_fault_analysis_async(
                 detect_time=detect_time,
                 part_name=part_name,

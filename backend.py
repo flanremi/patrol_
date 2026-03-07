@@ -8,6 +8,7 @@
 import asyncio
 import json
 import os
+import sys
 import uuid
 from datetime import datetime
 from typing import Dict, Any, Optional, Set
@@ -18,9 +19,11 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-load_dotenv()
+# 从 backend 所在目录加载 .env，保证无论从哪启动都能读到 RAG_MODE 等配置
+_env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+load_dotenv(_env_path)
 
-# 导入巡检智能体
+# 导入巡检智能体（其内部会按 rag_config.RAG_MODE 决定是否连接 Neo4j）
 from inspection_agent import InspectionAgent, InspectionInput
 
 
@@ -87,49 +90,85 @@ manager = ConnectionManager()
 inspection_agent: Optional[InspectionAgent] = None
 
 
+# ===================== RAG 接入方案配置 =====================
+# 与 rag_config 保持一致，单一数据源，避免与 inspection_agent 不同步
+def _get_rag_mode():
+    from rag_config import RAG_MODE
+    return RAG_MODE
+
+
 # ===================== FastAPI 应用 =====================
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """应用生命周期管理"""
     global inspection_agent
-    
-    # 1. 首先初始化故障分析核心模块并导入知识库
-    print("🚀 正在初始化故障分析核心模块...")
-    try:
-        from fault_analysis_core import initialize
-        
-        # 获取图谱数据文件路径（相对于 backend.py 的位置）
-        script_dir = os.path.dirname(os.path.abspath(__file__))
-        graph_data_path = os.path.join(script_dir, "inspection_analysis_demo", "zhongche_graph_documents.pkl")
-        
-        # 如果文件不存在，尝试其他可能的路径
-        if not os.path.exists(graph_data_path):
-            # 尝试直接使用相对路径
-            graph_data_path = os.path.join("inspection_analysis_demo", "zhongche_graph_documents.pkl")
-        
-        if os.path.exists(graph_data_path):
-            print(f"📂 找到图谱数据文件: {graph_data_path}")
-            success = initialize(graph_data_path=graph_data_path)
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    rag_mode = _get_rag_mode()
+    print(f"📌 当前 RAG 接入方案: {rag_mode} (graph=知识图谱+向量, vector=纯向量文档)")
+
+    # 1. 根据 RAG_MODE 初始化故障分析核心模块
+    if rag_mode == "vector":
+        # ---------- 向量库方案：校验向量库是否存在，不存在则执行激活脚本 ----------
+        try:
+            from rag_config import vector_db_exists, INIT_VECTOR_DB_SCRIPT
+            if not vector_db_exists():
+                print("⚠️ 向量数据库不存在，正在执行激活脚本...")
+                import subprocess
+                ret = subprocess.run(
+                    [sys.executable, INIT_VECTOR_DB_SCRIPT],
+                    cwd=script_dir,
+                    capture_output=False,
+                    timeout=600,
+                )
+                if ret.returncode != 0:
+                    print("⚠️ 向量数据库激活脚本执行失败，将尝试继续启动（可能使用空库）")
+            else:
+                print("✅ 向量数据库已存在，跳过激活脚本")
+        except Exception as e:
+            print(f"⚠️ 向量库校验/激活异常: {e}")
+            import traceback
+            traceback.print_exc()
+
+        print("🚀 正在初始化故障分析核心模块（纯向量库 RAG）...")
+        try:
+            from fault_analysis_core_vector import initialize as init_vector
+            success = init_vector()
+            if success:
+                print("✅ 故障分析核心模块（向量库版）初始化成功！")
+            else:
+                print("⚠️ 故障分析核心模块（向量库版）初始化失败，但将继续启动服务")
+        except Exception as e:
+            print(f"⚠️ 故障分析核心模块（向量库版）初始化异常: {e}")
+            import traceback
+            traceback.print_exc()
+    else:
+        # ---------- 图谱方案：原有逻辑 ----------
+        print("🚀 正在初始化故障分析核心模块（知识图谱+向量）...")
+        try:
+            from fault_analysis_core import initialize
+            graph_data_path = os.path.join(script_dir, "inspection_analysis_demo", "zhongche_graph_documents.pkl")
+            if not os.path.exists(graph_data_path):
+                graph_data_path = os.path.join("inspection_analysis_demo", "zhongche_graph_documents.pkl")
+            if os.path.exists(graph_data_path):
+                print(f"📂 找到图谱数据文件: {graph_data_path}")
+                success = initialize(graph_data_path=graph_data_path)
+            else:
+                print("⚠️ 图谱数据文件不存在，将使用空知识库启动")
+                success = initialize()
             if success:
                 print("✅ 故障分析核心模块初始化成功，知识库已导入！")
             else:
                 print("⚠️ 故障分析核心模块初始化失败，但将继续启动服务")
-        else:
-            print(f"⚠️ 图谱数据文件不存在: {graph_data_path}")
-            print("   将使用空知识库启动（首次运行或数据文件未找到）")
-            # 即使文件不存在，也尝试初始化（可能数据库已有数据）
-            initialize()
-    except Exception as e:
-        print(f"⚠️ 故障分析核心模块初始化异常: {e}")
-        import traceback
-        traceback.print_exc()
-        # 即使初始化失败，也尝试继续启动服务
-        try:
-            from fault_analysis_core import initialize
-            initialize()
-        except:
-            pass
-    
+        except Exception as e:
+            print(f"⚠️ 故障分析核心模块初始化异常: {e}")
+            import traceback
+            traceback.print_exc()
+            try:
+                from fault_analysis_core import initialize
+                initialize()
+            except Exception:
+                pass
+
     # 2. 初始化巡检智能体
     print("🚀 正在初始化巡检智能体...")
     try:
@@ -180,6 +219,7 @@ async def get_status():
         "connected": inspection_agent is not None,
         "active_connections": len(manager.active_connections),
         "agent_ready": inspection_agent is not None,
+        "rag_mode": _get_rag_mode(),
         "last_update": datetime.now().isoformat()
     }
 
@@ -350,10 +390,7 @@ async def handle_chat_message(websocket: WebSocket, action: str, payload: Dict):
 async def handle_tool_message(websocket: WebSocket, action: str, payload: Dict):
     """处理工具消息"""
     if action == "form_submit":
-        # 用户提交了故障工单
         form_data = payload.get("form_data", {})
-        query_message = payload.get("query_message", "")  # 包装好的查询消息
-        
         if not form_data:
             await manager.send_message(websocket, WSMessage(
                 type="system",
@@ -362,6 +399,70 @@ async def handle_tool_message(websocket: WebSocket, action: str, payload: Dict):
             ))
             return
 
+        rag_mode = _get_rag_mode()
+        detect_time = form_data.get("detect_time", datetime.now().strftime("%Y-%m-%d %H:%M"))
+        part_name = form_data.get("part_name", "")
+        part_position = form_data.get("part_position", "")
+        defect_type = form_data.get("defect_type", "")
+        detect_confidence = float(form_data.get("detect_confidence", 0.95))
+
+        async def send_callback(msg_type: str, action: str, data: dict):
+            await manager.send_message(websocket, WSMessage(type=msg_type, action=action, data=data))
+
+        # vector 模式：独立逻辑，直接走 fault_analysis_core_vector，不经过 inspection_agent
+        if rag_mode == "vector":
+            try:
+                await manager.send_message(websocket, WSMessage(
+                    type="chat",
+                    action="start",
+                    data={"message": "正在分析故障工单信息（向量 RAG）..."}
+                ))
+                from fault_analysis_core_vector import initialize, run_fault_analysis_async
+                if not initialize():
+                    await manager.send_message(websocket, WSMessage(
+                        type="tool",
+                        action="analysis_error",
+                        data={"error": "故障分析模块初始化失败", "message": "请检查向量数据库与 LLM 配置"}
+                    ))
+                    return
+                result = await run_fault_analysis_async(
+                    detect_time=detect_time,
+                    part_name=part_name,
+                    part_position=part_position,
+                    defect_type=defect_type,
+                    detect_confidence=detect_confidence,
+                    ws_callback=send_callback,
+                )
+                await send_callback("tool", "analysis_complete", {
+                    "final_report": result.final_report,
+                    "retry_count": result.retry_count,
+                    "thinking_processes": result.thinking_processes,
+                    "input": {
+                        "part_name": part_name,
+                        "defect_type": defect_type,
+                        "part_position": part_position,
+                        "detect_time": detect_time,
+                        "detect_confidence": detect_confidence,
+                    },
+                    "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                })
+                await manager.send_message(websocket, WSMessage(
+                    type="chat",
+                    action="complete",
+                    data={"message": "故障分析完成"}
+                ))
+            except Exception as e:
+                print(f"❌ 向量模式故障分析失败: {e}")
+                import traceback
+                traceback.print_exc()
+                await manager.send_message(websocket, WSMessage(
+                    type="chat",
+                    action="error",
+                    data={"error": str(e)}
+                ))
+            return
+
+        # graph 模式：经 inspection_agent，使用知识图谱+向量
         if inspection_agent is None:
             await manager.send_message(websocket, WSMessage(
                 type="system",
@@ -369,42 +470,25 @@ async def handle_tool_message(websocket: WebSocket, action: str, payload: Dict):
                 data={"error": "智能体未初始化"}
             ))
             return
-
-        # 发送开始处理消息
         await manager.send_message(websocket, WSMessage(
             type="chat",
             action="start",
             data={"message": "正在分析故障工单信息..."}
         ))
-
         try:
-            # 创建回调函数
-            async def send_callback(msg_type: str, action: str, data: dict):
-                await manager.send_message(websocket, WSMessage(
-                    type=msg_type,
-                    action=action,
-                    data=data
-                ))
-
-            # 构造巡检输入
             inspection_input = InspectionInput(
-                detect_time=form_data.get("detect_time", datetime.now().strftime("%Y-%m-%d %H:%M")),
-                part_name=form_data.get("part_name", ""),
-                part_position=form_data.get("part_position", ""),
-                defect_type=form_data.get("defect_type", ""),
-                detect_confidence=float(form_data.get("detect_confidence", 0.95))
+                detect_time=detect_time,
+                part_name=part_name,
+                part_position=part_position,
+                defect_type=defect_type,
+                detect_confidence=detect_confidence,
             )
-
-            # 调用故障分析
             await inspection_agent.run_fault_analysis(inspection_input, send_callback)
-
-            # 发送完成消息
             await manager.send_message(websocket, WSMessage(
                 type="chat",
                 action="complete",
                 data={"message": "故障分析完成"}
             ))
-
         except Exception as e:
             print(f"❌ 处理表单失败: {e}")
             import traceback

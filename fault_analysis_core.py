@@ -482,7 +482,7 @@ def generate_full_text_query(input_text: str) -> str:
 
 
 def graph_retriever(question: str) -> str:
-    """基于问题检索 Neo4j 图谱中的关系"""
+    """基于问题检索 Neo4j 图谱中的关系。这里涉及RAG（图谱检索）。"""
     if _graph_db is None:
         return "【模拟数据】未连接知识图谱，返回模拟检索结果。"
 
@@ -578,16 +578,21 @@ def graph_retriever(question: str) -> str:
     # 如果没有找到任何结果，返回提示信息（但不打印警告）
     if not result.strip():
         return "未找到相关图谱数据"
-    
+
+    # RAG：将图谱检索结果输出到控制台
+    print("\n" + "=" * 60 + "\n[RAG] 图谱检索")
+    print(f"[RAG] 检索 query: {question}")
+    print(f"[RAG] 图谱检索结果长度: {len(result)} 字符")
+    print("[RAG] 图谱检索结果内容:\n" + result + "\n" + "=" * 60)
     return result.strip()
 
 
 def full_retriever(question: str) -> str:
-    """混合检索（图谱 + 向量）"""
-    # 图谱检索
+    """混合检索（图谱 + 向量）。这里涉及RAG（混合检索）。"""
+    # 这里涉及RAG：图谱检索
     graph_data = graph_retriever(question)
 
-    # 向量检索
+    # 这里涉及RAG：向量检索
     vector_data = []
     if _vector_retriever is not None:
         try:
@@ -595,12 +600,18 @@ def full_retriever(question: str) -> str:
         except Exception as e:
             print(f"⚠️ 向量检索失败: {e}")
 
-    return f"""图谱数据:
+    combined = f"""图谱数据:
 {graph_data}
 
 向量数据:
 {"#Document ".join(vector_data) if vector_data else "无向量检索结果"}
 """
+    # RAG：将混合检索结果输出到控制台
+    print("\n" + "=" * 60 + "\n[RAG] 混合检索（图谱 + 向量）")
+    print(f"[RAG] 检索 query: {question}")
+    print(f"[RAG] 图谱部分长度: {len(graph_data)} 字符, 向量文档数: {len(vector_data)}")
+    print("[RAG] 混合检索结果全文:\n" + combined + "=" * 60 + "\n")
+    return combined
 
 
 def _common_llm(prompt: str, node_name: str):
@@ -618,7 +629,7 @@ def _common_llm(prompt: str, node_name: str):
 
 # ===================== LangGraph 节点定义 =====================
 def retrieval_node(state: State) -> State:
-    """数据检索节点"""
+    """数据检索节点。这里涉及RAG（本节点执行 GraphRAG 混合检索，结果会输出到控制台）。"""
     defect_input = state["defect_input"]
     supplementary_queries = state.get("supplementary_queries", [])
     retry_count = state.get("retry_count", 0)
@@ -642,7 +653,7 @@ def retrieval_node(state: State) -> State:
         "content": f"检索目标：{query}\n检索范围：知识图谱 + 向量数据库"
     })
 
-    # 执行混合检索
+    # 这里涉及RAG：执行混合检索（结果会输出到控制台）
     raw_data = full_retriever(query)
 
     # 记录思考过程 - 检索完成
@@ -682,7 +693,8 @@ def retrieval_node(state: State) -> State:
 
 
 def extraction_node(state: State) -> State:
-    """信息提取节点"""
+    """信息提取节点。输入 retrieval_result 来自 RAG 检索结果。"""
+    # 这里涉及RAG：使用的 state["retrieval_result"] 为上游 RAG 混合检索并整理后的内容
     retrieval_result = state["retrieval_result"]
     defect_input = state["defect_input"]
 

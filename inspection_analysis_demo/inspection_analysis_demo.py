@@ -249,7 +249,7 @@ entity_prompt = ChatPromptTemplate.from_messages([
 entity_chain = entity_prompt | llm.with_structured_output(Entities)
 
 def graph_retriever(question: str) -> str:
-    """基于问题中的实体，检索Neo4j图谱中的关系"""
+    """基于问题中的实体，检索Neo4j图谱中的关系。这里涉及RAG（图谱检索）。"""
     result = ""
     try:
         entities = entity_chain.invoke({"question": question})
@@ -304,11 +304,19 @@ def graph_retriever(question: str) -> str:
                     print(f"⚠️  图谱检索异常（实体：{entity}）：{idx_error}")
     except Exception as e:
         print(f"⚠️  实体提取或图谱检索异常：{e}")
+    # RAG：将图谱检索结果输出到控制台
+    if result:
+        print("\n" + "=" * 60 + "\n[RAG] 图谱检索")
+        print(f"[RAG] 检索 query: {question}")
+        print(f"[RAG] 图谱检索结果长度: {len(result)} 字符")
+        print("[RAG] 图谱检索结果内容:\n" + result + "\n" + "=" * 60)
     return result
 
 def full_retriever(question: str):
+    """混合检索（图谱+向量）。这里涉及RAG（混合检索）。"""
+    # 这里涉及RAG：图谱检索
     graph_data = graph_retriever(question)
-    # 检查vector_retriever是否可用
+    # 这里涉及RAG：向量检索
     if vector_retriever is not None:
         try:
             vector_data = [el.page_content for el in vector_retriever.invoke(question)]
@@ -323,6 +331,11 @@ def full_retriever(question: str):
 vector data:
 {"#Document ". join(vector_data)}
     """
+    # RAG：将混合检索结果输出到控制台
+    print("\n" + "=" * 60 + "\n[RAG] 混合检索（图谱 + 向量）")
+    print(f"[RAG] 检索 query: {question}")
+    print(f"[RAG] 图谱部分长度: {len(graph_data)} 字符, 向量文档数: {len(vector_data)}")
+    print("[RAG] 混合检索结果全文:\n" + final_data + "=" * 60 + "\n")
     return final_data
 
 # -------------------------- 状态类型定义--------------------------
@@ -342,7 +355,7 @@ class State(TypedDict):
 
 # -------------------------- LangGraph节点定义--------------------------
 def retrieval_node(state: State) -> State:
-    """数据检索节点"""
+    """数据检索节点。这里涉及RAG（本节点执行 GraphRAG 混合检索）。"""
     defect_input = state["defect_input"]
     supplementary_queries = state.get("supplementary_queries", [])
     retry_count = state.get("retry_count", 0)
@@ -369,7 +382,7 @@ def retrieval_node(state: State) -> State:
     thinking_process += f"开始执行GraphRAG混合检索（图谱+向量）..."
     state["thinking_processes"].append(thinking_process)
     
-    # 执行混合检索
+    # 这里涉及RAG：执行混合检索（结果会输出到控制台）
     raw_data = full_retriever(query)
     
     # 记录检索完成状态
@@ -401,7 +414,8 @@ def retrieval_node(state: State) -> State:
     return state
 
 def extraction_node(state: State) -> State:
-    """信息提取节点"""
+    """信息提取节点。输入为上游 RAG 检索整理后的内容。这里涉及RAG（使用 RAG 检索结果）。"""
+    # 这里涉及RAG：retrieval_result 来自上游 RAG 混合检索并整理后的内容
     retrieval_result = state["retrieval_result"]
     defect_input = state["defect_input"]
     

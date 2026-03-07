@@ -237,3 +237,6 @@ logs
 .output
 
 version.json
+/doc/
+/data/
+/chat_record/

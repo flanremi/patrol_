@@ -1,21 +1,31 @@
-# LangGraph���API���� - �������԰汾
+# 巡检智能体 - 依赖列表
 
-# ���Ŀ��
+# Web 与 API
 fastapi>=0.104.0
-
-# LangChain��LangGraph
-langchain-openai>=0.1.0
-langgraph>=0.1.0
-
-# ͼ����
-ultralytics>=8.0.0
-
-# ���ߺ�ʵ�ó���
+uvicorn>=0.23.0
 python-dotenv>=1.0.0
 pydantic>=2.0.0
 
-# ASGI������ (���������Ƽ�)
-uvicorn>=0.23.0
+# LangChain / LangGraph
+langchain-openai>=0.1.0
+langgraph>=0.1.0
+langchain-core>=0.3.0
+langchain-community>=0.3.0
+langchain-text-splitters>=0.3.0
 
-# ��ѡASGI������
-# hypercorn>=0.14.0
+# 向量数据库（RAG 向量库方案）
+chromadb>=0.4.0
+
+# 本地嵌入模型（sentence-transformers，无需代理、不连远端）
+sentence-transformers>=2.2.0
+
+# 文档加载与分块（向量库激活脚本用）
+pypdf>=4.0.0
+python-docx>=1.0.0
+
+# 目标检测（可选）
+ultralytics>=8.0.0
+
+# 可选：Neo4j 知识图谱方案
+# langchain-neo4j
+# langchain-ollama
