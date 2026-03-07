@@ -9,49 +9,24 @@
         </div>
 
         <div class="flex items-center gap-2">
-          <!-- 统计信息快捷显示 -->
+          <!-- 连接状态 -->
           <div class="hidden lg:flex items-center gap-3 px-3 py-1 bg-slate-50 rounded border border-slate-200">
             <div class="flex items-center gap-1.5">
-              <div class="w-1.5 h-1.5 rounded-full bg-blue-500"></div>
-              <span class="text-xs text-slate-600">智能体节点 <span class="text-slate-900 font-medium">{{nodeCount}}</span></span>
-            </div>
-            <div class="w-px h-3 bg-slate-300"></div>
-            <div class="flex items-center gap-1.5">
-              <div class="w-1.5 h-1.5 rounded-full bg-blue-400"></div>
-              <span class="text-xs text-slate-600">推理连接 <span class="text-slate-900 font-medium">{{edgeCount}}</span></span>
-            </div>
-            <div class="w-px h-3 bg-slate-300"></div>
-            <div class="flex items-center gap-1.5">
               <div class="w-1.5 h-1.5 rounded-full"
-                   :class="graphStatus === '正常' ? 'bg-green-500' : graphStatus === '加载中' ? 'bg-amber-500 animate-pulse' : 'bg-red-500'"></div>
-              <span class="text-xs text-slate-600">{{graphStatus}}</span>
+                   :class="connectionStatus === 'connected' ? 'bg-green-500' : connectionStatus === 'connecting' ? 'bg-amber-500 animate-pulse' : 'bg-red-500'"></div>
+              <span class="text-xs text-slate-600">
+                {{ connectionStatus === 'connected' ? '已连接' : connectionStatus === 'connecting' ? '连接中...' : '未连接' }}
+              </span>
             </div>
           </div>
 
-          <WorkflowHeaderButton
-            @click="showStatsDrawer = true"
-            title="统计信息"
-            class="lg:hidden"
-          >
-            <ChartBarIcon class="w-4 h-4"/>
-          </WorkflowHeaderButton>
-
-          <WorkflowHeaderButton
-            @click="navigateToHome"
-            title="返回首页"
-          >
-            <HomeIcon class="w-4 h-4"/>
-          </WorkflowHeaderButton>
-
-          <WorkflowHeaderButton
-            @click="refreshGraph"
-            :disabled="loading"
-            :loading="loading"
-            title="刷新图结构"
-          >
-            <ArrowPathIcon class="w-4 h-4"
-                           :class="loading ? 'animate-spin' : ''"/>
-          </WorkflowHeaderButton>
+          <!-- Canvas 状态指示 -->
+          <div v-if="showCanvas" class="hidden lg:flex items-center gap-1.5 px-3 py-1 bg-blue-50 rounded border border-blue-200">
+            <DocumentTextIcon class="w-3.5 h-3.5 text-blue-600"/>
+            <span class="text-xs text-blue-600 font-medium">
+              {{ canvasMode === 'form' ? '工单编辑中' : '查看分析结果' }}
+            </span>
+          </div>
         </div>
       </div>
     </header>
@@ -60,64 +35,47 @@
     <main class="flex-1 overflow-hidden flex relative">
       <!-- 左侧聊天界面 (动态宽度) -->
       <div
-        class="border-r border-slate-200 bg-white shadow-lg z-20  transition-all duration-700 ease-in-out relative"
-        :class="showWorkflow ? 'w-1/3' : 'w-full'"
+        class="border-r border-slate-200 bg-white shadow-lg z-20 transition-all duration-700 ease-in-out relative"
+        :class="showCanvas ? 'w-2/5' : 'w-full'"
       >
-        <ModernChat :api-base-url="apiBaseUrl"/>
+        <ModernChat
+          ref="chatRef"
+          :api-base-url="apiBaseUrl"
+          @show-form="handleShowForm"
+          @show-result="handleShowResult"
+          @hide-canvas="handleHideCanvas"
+          @analysis-start="handleAnalysisStart"
+          @analysis-step="handleAnalysisStep"
+          @analysis-complete="handleAnalysisComplete"
+          @analysis-error="handleAnalysisError"
+        />
 
-        <!-- 工作流面板切换按钮 - 右侧中央 -->
+        <!-- Canvas 面板切换按钮 - 右侧中央 -->
         <button
-          @click="toggleWorkflow"
-          class="absolute top-1/2 -translate-y-1/2 z-30 w-6 h-6 rounded-full p-1  hover:shadow-xl transition-all duration-200 flex items-center justify-center group border border-slate-200 "
-          :class="{
-            '-right-3 bg-white': showWorkflow,
-            'right-1 bg-blue-500 text-white': !showWorkflow
-          }"
-          :title="showWorkflow ? '隐藏工作流' : '显示工作流'"
+          v-if="showCanvas"
+          @click="toggleCanvas"
+          class="absolute top-1/2 -translate-y-1/2 z-30 w-6 h-6 rounded-full p-1 hover:shadow-xl transition-all duration-200 flex items-center justify-center group border border-slate-200 -right-3 bg-white"
+          title="隐藏面板"
         >
           <ChevronRightIcon
-            v-if="showWorkflow"
-            class="w-4 h-4  group-hover:text-blue-500 group-hover:translate-x-0.5 transition-all"
-          />
-          <ChevronLeftIcon
-            v-else
-            class="w-4 h-4  group-hover:text-blue-500 group-hover:-translate-x-0.5 transition-all"
+            class="w-4 h-4 group-hover:text-blue-500 group-hover:translate-x-0.5 transition-all"
           />
         </button>
       </div>
 
-      <!-- 右侧工作流画布 (始终渲染，通过样式控制显示) -->
+      <!-- 右侧 Canvas 面板 -->
       <div
         class="overflow-hidden relative transition-all duration-700 ease-in-out"
-        :class="showWorkflow ? 'flex-1 opacity-100' : 'w-0 opacity-0 pointer-events-none'"
+        :class="showCanvas ? 'flex-1 opacity-100' : 'w-0 opacity-0 pointer-events-none'"
       >
-        <WorkflowCanvas
+        <InspectionCanvas
           ref="canvasRef"
-          :graph-data="graphData"
-          :api-base-url="apiBaseUrl"
-          :active-node-id="activeNodeId"
-          :node-execution-status="nodeExecutionStatus"
-          :layout-config="layoutConfig"
-          @node-click="handleNodeClick"
-          @edge-click="handleEdgeClick"
-          @graph-loaded="handleGraphLoaded"
-          @graph-error="handleGraphError"
+          :show-form="canvasMode === 'form'"
+          :analysis-result="analysisResult"
+          :prefill-data="prefillData"
+          @submit="handleFormSubmit"
+          @close="handleHideCanvas"
         />
-
-        <!-- 节点详情抽屉 -->
-        <NodeDetailDrawer
-          :selected-node="selectedNode"
-          @close="selectedNode = null"
-        />
-
-        <!-- 遮罩层 -->
-        <transition name="fade">
-          <div
-            v-if="showStatsDrawer"
-            @click="showStatsDrawer = false"
-            class="lg:hidden absolute inset-0 bg-black/20 z-40"
-          ></div>
-        </transition>
       </div>
     </main>
   </div>
@@ -126,17 +84,20 @@
 <script setup>
 // 页面元信息
 useHead({
-  title: '工作流可视化 - LangGraph',
+  title: '故障检测智能体',
   meta: [
-    { name: 'description', content: '类似 ComfyUI 的 LangGraph 工作流可视化引擎' },
+    { name: 'description', content: '轨道交通故障检测智能分析系统' },
   ],
 })
 
+// 导入 Vue
+import { nextTick } from 'vue'
+
 // 导入组件
-import NodeDetailDrawer from '~/components/workflow/NodeDetailDrawer.vue'
 import WorkflowLogo from '~/components/workflow/WorkflowLogo.vue'
 import ModernChat from '~/components/ModernChat.vue'
-import { ArrowPathIcon, ChartBarIcon, ChevronLeftIcon, ChevronRightIcon, HomeIcon } from '@heroicons/vue/24/outline'
+import InspectionCanvas from '~/components/InspectionCanvas.vue'
+import { ChevronRightIcon, DocumentTextIcon } from '@heroicons/vue/24/outline'
 import { ChatStoreKey, useChatStore } from '~/composables/useChatStore'
 
 // 配置
@@ -146,245 +107,124 @@ const apiBaseUrl = 'http://localhost:8001'
 const chatStore = useChatStore()
 provide(ChatStoreKey, chatStore)
 
-
-// 布局配置（可调整以压缩间距）
-const layoutConfig = ref({
-  nodesep: 20,      // 节点间距（垂直），默认 20
-  ranksep: 60,      // 层级间距（水平），默认 60
-  marginx: 20,      // 画布左右边距，默认 20
-  marginy: 20,      // 画布上下边距，默认 20
-  maxRanks: 0,      // 最大列数，超过则换行（0 表示不换行），默认 8
-  wrapGap: 100,      // 换行后的垂直间距，默认 100
-  layoutMaxWidth: 2000,
-  regionGapX: 100,
-  regionGapY: 100,
-})
-
 // 响应式数据
-const graphData = ref({
-  nodes: [],
-  edges: [],
-})
-const loading = ref(false)
-const graphStatus = ref('未加载')
-const selectedNode = ref(null)
-const activeNodeId = ref(null)
-const nodeExecutionStatus = ref({})
-const lastUpdateTime = ref('--')
 const connectionStatus = ref('disconnected')
-const showStatsDrawer = ref(false)
-const showWorkflow = ref(false) // 控制工作流画布的显示
+const showCanvas = ref(false)
+const canvasMode = ref('form') // 'form' | 'result'
+const analysisResult = ref(null)
+const prefillData = ref(null)
 
-// 画布引用
+// 组件引用
+const chatRef = ref(null)
 const canvasRef = ref(null)
 
-// 节点和边的计数（从 Canvas 组件获取实际渲染的数量）
-const nodeCount = ref(0)
-const edgeCount = ref(0)
-
-// 方法
-const navigateToHome = () => {
-  navigateTo('/')
+// 切换 Canvas 显示
+const toggleCanvas = () => {
+  showCanvas.value = !showCanvas.value
 }
 
-const toggleWorkflow = () => {
-  showWorkflow.value = !showWorkflow.value
+// 显示表单
+const handleShowForm = (data = null) => {
+  prefillData.value = data
+  canvasMode.value = 'form'
+  showCanvas.value = true
+}
 
-  // 如果展开工作流，延迟后执行 fitView
-  if (showWorkflow.value) {
-    setTimeout(() => {
-      if (canvasRef.value && canvasRef.value.fitView) {
-        canvasRef.value.fitView()
-      }
-    }, 700) // 等待 700ms 动画完成
+// 显示分析结果
+const handleShowResult = (result) => {
+  analysisResult.value = result
+  canvasMode.value = 'result'
+  showCanvas.value = true
+}
+
+// 隐藏 Canvas
+const handleHideCanvas = () => {
+  showCanvas.value = false
+}
+
+// 处理表单提交 - 发送包装好的工单查询信息
+const handleFormSubmit = (formData) => {
+  console.log('📝 工单提交:', formData)
+  
+  // 通过 WebSocket 发送表单数据（包含查询消息）
+  if (chatRef.value && chatRef.value.sendFormData) {
+    chatRef.value.sendFormData(formData)
   }
 }
 
-const refreshGraph = async () => {
-  loading.value = true
-  graphStatus.value = '加载中'
-
-  try {
-    // 参照 GraphVisualization.vue 的方式，直接调用后端接口
-    const response = await fetch(`${apiBaseUrl}/graph/info`)
-
-    if (!response.ok) {
-      throw new Error(`HTTP error! status: ${response.status}`)
-    }
-
-    const data = await response.json()
-
-    if (data.error) {
-      throw new Error(data.error)
-    }
-
-    // GraphVisualization 返回的数据结构包含 graph_structure
-    if (data.graph_structure) {
-      graphData.value = {
-        nodes: data.graph_structure.nodes || [],
-        edges: data.graph_structure.edges || [],
-      }
-    } else if (data.nodes && data.edges) {
-      // 兼容直接返回 nodes 和 edges 的格式
-      graphData.value = {
-        nodes: data.nodes,
-        edges: data.edges,
-      }
+// 处理分析开始事件
+const handleAnalysisStart = (data) => {
+  console.log('🔄 分析开始:', data)
+  
+  // 展开 Canvas
+  showCanvas.value = true
+  canvasMode.value = 'analyzing'
+  
+  // 使用 nextTick 确保 DOM 更新后再调用组件方法
+  nextTick(() => {
+    if (canvasRef.value && canvasRef.value.startAnalyzing) {
+      canvasRef.value.startAnalyzing()
+      console.log('📢 已调用 Canvas.startAnalyzing()')
     } else {
-      throw new Error('无效的图数据格式')
+      console.warn('⚠️ canvasRef 未就绪')
     }
+  })
+}
 
-    graphStatus.value = '正常'
-    connectionStatus.value = 'connected'
-    lastUpdateTime.value = new Date().toLocaleTimeString('zh-CN')
-  } catch (error) {
-    console.error('❌ 刷新图结构失败:', error)
-    graphStatus.value = '错误'
-    connectionStatus.value = 'disconnected'
-    lastUpdateTime.value = new Date().toLocaleTimeString('zh-CN')
-
-    // 不使用默认数据，显示错误状态
-    graphData.value = {
-      nodes: [],
-      edges: [],
-    }
-  } finally {
-    loading.value = false
+// 处理分析步骤事件
+const handleAnalysisStep = (data) => {
+  console.log('📊 分析步骤:', data)
+  
+  // 确保 Canvas 已展开
+  if (!showCanvas.value) {
+    showCanvas.value = true
   }
-}
-
-const handleNodeClick = (node) => {
-  selectedNode.value = node
-  activeNodeId.value = node.id
-
-  // 3秒后清除高亮
-  setTimeout(() => {
-    if (activeNodeId.value === node.id) {
-      activeNodeId.value = null
+  
+  // 使用 nextTick 确保组件已挂载
+  nextTick(() => {
+    if (canvasRef.value && canvasRef.value.addAnalysisStep) {
+      canvasRef.value.addAnalysisStep(data)
+      console.log('📢 已添加步骤:', data.node)
     }
-  }, 3000)
+  })
 }
 
-const handleEdgeClick = (edge) => {
+// 处理分析完成事件
+const handleAnalysisComplete = (data) => {
+  console.log('✅ 分析完成:', data)
+  
+  // 设置分析结果
+  analysisResult.value = data
+  canvasMode.value = 'result'
+  
+  // 使用 nextTick 确保状态更新后调用方法
+  nextTick(() => {
+    if (canvasRef.value && canvasRef.value.completeAnalysis) {
+      canvasRef.value.completeAnalysis(data)
+      console.log('📢 已调用 Canvas.completeAnalysis()')
+    }
+  })
 }
 
-const handleGraphLoaded = (data) => {
-  graphStatus.value = '正常'
+// 处理分析错误事件
+const handleAnalysisError = (data) => {
+  console.error('❌ 分析错误:', data)
+  
+  nextTick(() => {
+    if (canvasRef.value && canvasRef.value.setSubmitting) {
+      canvasRef.value.setSubmitting(false)
+    }
+  })
+}
+
+// 监听聊天存储中的事件
+chatStore.onChatStart(() => {
   connectionStatus.value = 'connected'
-  // 更新实际渲染的节点和边数量
-  if (data && data.nodes && data.edges) {
-    nodeCount.value = data.nodes.length
-    edgeCount.value = data.edges.length
-  }
-}
-
-const handleGraphError = (error) => {
-  graphStatus.value = '错误'
-  connectionStatus.value = 'disconnected'
-  nodeCount.value = 0
-  edgeCount.value = 0
-}
-
-// 处理节点高亮（从聊天组件触发）
-const handleNodeHighlight = ({ nodeId, duration = 3000 }) => {
-  // 使用 WorkflowCanvas 的 nodeControl API
-  if (canvasRef.value && canvasRef.value.nodeControl) {
-    canvasRef.value.nodeControl.highlightNode(nodeId)
-
-    // 自动移动画布到该节点并调整缩放
-    nextTick(() => {
-      if (canvasRef.value && canvasRef.value.focusNode) {
-        canvasRef.value.focusNode(nodeId)
-      }
-    })
-  } else {
-    console.warn('⚠️ WorkflowCanvas ref 或 nodeControl 未就绪')
-  }
-
-  // 保留旧的逻辑作为备用
-  activeNodeId.value = nodeId
-}
-
-// 处理节点取消高亮（从聊天组件触发）
-const handleNodeUnhighlight = ({ nodeId }) => {
-  // 使用 WorkflowCanvas 的 nodeControl API
-  if (canvasRef.value && canvasRef.value.nodeControl) {
-    canvasRef.value.nodeControl.unhighlightNode(nodeId)
-  }
-
-  // 清除旧的逻辑
-  if (activeNodeId.value === nodeId) {
-    activeNodeId.value = null
-  }
-}
-
-// 处理节点状态变化（从聊天组件触发）
-const handleNodeStatusChange = ({ nodeId, status }) => {
-  // 使用 WorkflowCanvas 的 nodeControl API
-  if (canvasRef.value && canvasRef.value.nodeControl) {
-    if (status === 'default') {
-      // 重置节点状态
-      canvasRef.value.nodeControl.setNodeStatus(nodeId, null)
-      canvasRef.value.nodeControl.unhighlightNode(nodeId)
-    } else if (status === 'executing') {
-      // 开始执行
-      canvasRef.value.nodeControl.startNodeExecution(nodeId)
-    } else if (status === 'completed') {
-      // 执行完成 - 停止高亮
-      canvasRef.value.nodeControl.completeNodeExecution(nodeId)
-      // completeNodeExecution 内部会调用 unhighlightNode，但我们再次确保
-      canvasRef.value.nodeControl.unhighlightNode(nodeId)
-    } else if (status === 'error') {
-      // 执行失败 - 停止高亮
-      canvasRef.value.nodeControl.failNodeExecution(nodeId, '执行失败')
-      // failNodeExecution 内部会调用 unhighlightNode，但我们再次确保
-      canvasRef.value.nodeControl.unhighlightNode(nodeId)
-    }
-  } else {
-    console.warn('⚠️ WorkflowCanvas ref 或 nodeControl 未就绪')
-  }
-
-  // 保留旧的逻辑作为备用
-  if (status === 'default') {
-    delete nodeExecutionStatus.value[nodeId]
-  } else {
-    nodeExecutionStatus.value[nodeId] = status
-  }
-
-  if (status === 'executing') {
-    activeNodeId.value = nodeId
-  }
-
-  if (status === 'completed' || status === 'error') {
-    // 立即清除活跃状态
-    if (activeNodeId.value === nodeId) {
-      activeNodeId.value = null
-    }
-  }
-}
-// 处理聊天开始（显示工作流画布）
-const handleChatStart = async () => {
-  showWorkflow.value = true
-
-  // 等待动画完成后，自动 fitView
-  await nextTick()
-  setTimeout(() => {
-    if (canvasRef.value && canvasRef.value.fitView) {
-      canvasRef.value.fitView()
-    }
-  }, 700) // 等待 700ms 动画完成
-}
-
-// 注册聊天事件处理
-chatStore.onNodeHighlight(handleNodeHighlight)
-chatStore.onNodeUnhighlight(handleNodeUnhighlight)
-chatStore.onNodeStatusChange(handleNodeStatusChange)
-chatStore.onChatStart(handleChatStart)
-
+})
 
 // 初始化
-onMounted(async () => {
-  await refreshGraph()
+onMounted(() => {
+  // 初始状态：不展开 Canvas
+  showCanvas.value = false
 })
 </script>
-
