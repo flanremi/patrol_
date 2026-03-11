@@ -10,6 +10,12 @@ import logging
 import os
 import sys
 
+# ---------- HuggingFace 镜像配置（中国用户） ----------
+# 设置镜像源加速模型下载，如 https://hf-mirror.com
+HF_ENDPOINT = os.getenv("HF_ENDPOINT", "https://hf-mirror.com")
+if HF_ENDPOINT:
+    os.environ["HF_ENDPOINT"] = HF_ENDPOINT
+
 # 将项目根目录加入 path
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.dirname(SCRIPT_DIR)
