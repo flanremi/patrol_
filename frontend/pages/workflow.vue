@@ -100,8 +100,9 @@ import InspectionCanvas from '~/components/InspectionCanvas.vue'
 import { ChevronRightIcon, DocumentTextIcon } from '@heroicons/vue/24/outline'
 import { ChatStoreKey, useChatStore } from '~/composables/useChatStore'
 
-// 配置
-const apiBaseUrl = 'http://0.0.0.0:8001'
+// 配置 - 使用运行时配置或环境变量
+const config = useRuntimeConfig()
+const apiBaseUrl = config.public.apiBaseUrl || 'http://123.151.89.76:8001'
 
 // 创建聊天存储并提供给子组件
 const chatStore = useChatStore()

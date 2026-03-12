@@ -11,7 +11,10 @@ export default defineNuxtConfig({
   ],
   runtimeConfig: {
     // 私有配置（仅在服务端可用）
-    public: {},
+    public: {
+      // API 基础 URL，可通过环境变量 NUXT_PUBLIC_API_BASE_URL 覆盖
+      apiBaseUrl: process.env.NUXT_PUBLIC_API_BASE_URL || 'http://123.151.89.76:8001',
+    },
   },
   app: {
     head: {
