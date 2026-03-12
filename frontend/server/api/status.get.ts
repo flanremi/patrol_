@@ -1,7 +1,7 @@
 export default defineEventHandler(async (event) => {
   try {
     // 尝试连接Python后端获取状态
-    const response = await $fetch('http://localhost:8001/status', {
+    const response = await $fetch('http://0.0.0.0:8001/status', {
       method: 'GET',
       timeout: 5000
     })

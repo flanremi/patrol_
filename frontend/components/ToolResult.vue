@@ -189,7 +189,7 @@ const props = defineProps({
   },
   apiBaseUrl: {
     type: String,
-    default: 'http://localhost:8001'
+    default: 'http://0.0.0.0:8001'
   }
 })
 

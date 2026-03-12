@@ -146,7 +146,7 @@ else:
 # ===================== LLM 初始化 =====================
 base_url = os.getenv("OPENAI_BASE_URL")
 api_key = os.getenv("OPENAI_API_KEY")
-model_name = os.getenv("OPENAI_MODEL", "gpt-4")
+model_name = os.getenv("OPENAI_MODEL", "qwen-plus")
 
 llm = ChatOpenAI(
     base_url=base_url,

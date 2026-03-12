@@ -81,7 +81,7 @@ npm install
 npm run dev
 ```
 
-前端将在 http://localhost:3000 运行
+前端将在 http://0.0.0.0:3000 运行
 
 ### 3. 启动后端API（可选）
 
@@ -91,7 +91,7 @@ pip install fastapi uvicorn
 python backend_api.py
 ```
 
-后端API将在 http://localhost:8000 运行
+后端API将在 http://0.0.0.0:8000 运行
 
 ## 🔧 配置说明
 
@@ -106,7 +106,7 @@ OPENAI_BASE_URL=https://api.openai.com/v1
 OPENAI_MODEL=gpt-3.5-turbo
 
 # API配置
-API_BASE=http://localhost:8000
+API_BASE=http://0.0.0.0:8000
 ```
 
 ### Nuxt配置

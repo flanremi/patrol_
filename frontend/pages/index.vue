@@ -49,7 +49,7 @@
           <div class="p-6">
             <GraphVisualization
               :auto-fetch="true"
-              :api-base-url="'http://localhost:8001'"
+              :api-base-url="'http://0.0.0.0:8001'"
               :active-node-id="activeNodeId"
               :node-execution-status="nodeExecutionStatus"
               @node-click="onNodeClick"
@@ -63,7 +63,7 @@
         <!-- 右侧：聊天交互界面 (占2列宽度) -->
         <div class="lg:col-span-2 bg-white/80 backdrop-blur-xl rounded-xl shadow-lg border border-slate-200/60 overflow-hidden" style="height: 700px;">
           <ModernChat
-            api-base-url="http://localhost:8001"
+            api-base-url="http://0.0.0.0:8001"
             @node-highlight="handleNodeHighlight"
             @node-status-change="handleNodeStatusChange"
           />

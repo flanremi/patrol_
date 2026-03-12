@@ -101,7 +101,7 @@ import { ChevronRightIcon, DocumentTextIcon } from '@heroicons/vue/24/outline'
 import { ChatStoreKey, useChatStore } from '~/composables/useChatStore'
 
 // 配置
-const apiBaseUrl = 'http://localhost:8001'
+const apiBaseUrl = 'http://0.0.0.0:8001'
 
 // 创建聊天存储并提供给子组件
 const chatStore = useChatStore()

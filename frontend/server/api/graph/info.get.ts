@@ -1,7 +1,7 @@
 export default defineEventHandler(async (event) => {
   try {
     // 尝试从后端获取图架构信息
-    const response = await $fetch('http://localhost:8000/graph/info', {
+    const response = await $fetch('http://0.0.0.0:8000/graph/info', {
       method: 'GET',
       timeout: 5000
     })

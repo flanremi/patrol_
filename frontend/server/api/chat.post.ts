@@ -10,7 +10,7 @@ export default defineEventHandler(async (event) => {
     }
 
     // 调用Python后端API
-    const response = await $fetch('http://localhost:8001/chat', {
+    const response = await $fetch('http://0.0.0.0:8001/chat', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json'
