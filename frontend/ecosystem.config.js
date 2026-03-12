@@ -3,7 +3,7 @@ module.exports = {
     name: 'nuxt-frontend',
     // 使用生产构建后的输出
     script: './.output/server/index.mjs',
-    cwd: '/opt/webapp/patrol_/frontend',
+    cwd: '/udat/webapp_f_g/patrol_/frontend',
     instances: 1,
     autorestart: true,
     watch: false,
