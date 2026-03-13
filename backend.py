@@ -507,18 +507,22 @@ async def handle_tool_message(websocket: WebSocket, action: str, payload: Dict):
 
 
 # ===================== 启动入口 =====================
-if __name__ == "__main__":
-    import importlib.util
-
-    print("🚀 启动巡检智能体 WebSocket 服务...")
+def run_uvicorn():
+    """使用 uvicorn 启动（开发模式）"""
+    import uvicorn
+    print("🚀 启动巡检智能体 WebSocket 服务 (Uvicorn)...")
     print("📍 HTTP API: http://localhost:8001")
     print("📍 WebSocket: ws://localhost:8001/ws")
     print("📚 API 文档: http://localhost:8001/docs")
     print()
+    uvicorn.run(app, host="0.0.0.0", port=8001, log_level="info")
+
+
+if __name__ == "__main__":
+    import importlib.util
 
     if importlib.util.find_spec("uvicorn"):
-        import uvicorn
-        uvicorn.run(app, host="0.0.0.0", port=8001, log_level="info")
+        run_uvicorn()
     else:
         print("❌ 请安装 uvicorn: pip install uvicorn")
 
