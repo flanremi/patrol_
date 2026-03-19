@@ -36,9 +36,9 @@
           </div>
 
           <h1 class="text-[32px] font-bold text-gray-900 mb-3 tracking-tight">
-            故障检测智能体
+            中车智能体平台
           </h1>
-          <p class="text-[16px] text-gray-600 leading-relaxed max-w-md mx-auto">
+          <p class="text-[16px] text-gray-600 leading-relaxed max-w-md mx-auto specialcss">
             智能故障检查与分析系统
           </p>
         </div>

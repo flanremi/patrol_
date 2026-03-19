@@ -14,7 +14,7 @@
 defineProps({
   title: {
     type: String,
-    default: '故障检测智能体'
+    default: '中车智能体平台'
   },
   subtitle: {
     type: String,

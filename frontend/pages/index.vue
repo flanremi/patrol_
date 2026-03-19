@@ -8,7 +8,7 @@
             <WorkflowLogo size="w-12 h-12" />
             <div>
               <h1 class="text-2xl font-bold text-slate-800">
-                故障检测智能体
+                中车智能体平台
               </h1>
               <p class="text-slate-600 mt-1 text-sm">
                 架构可视化 & 智能对话交互

@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 巡检智能体
-基于 LangGraph 的故障检测智能体
+基于 LangGraph 的中车智能体平台
 """
 import os
 import json
