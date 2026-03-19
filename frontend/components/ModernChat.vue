@@ -49,7 +49,7 @@
             v-for="(suggestion, index) in suggestions"
             :key="index"
             @click="sendQuickMessage(suggestion.message)"
-            :disabled="loading || !wsConnected"
+            :disabled="!wsConnected || isSending"
             class="group relative px-5 py-4 text-left rounded-2xl bg-white border-2 border-blue-200 shadow-sm hover:shadow-md hover:border-blue-500 transition-all duration-200 transform hover:-translate-y-0.5 disabled:opacity-50 disabled:cursor-not-allowed"
           >
             <div class="absolute top-2 right-2 w-1 h-1 bg-blue-300 rounded-full opacity-0 group-hover:opacity-100 transition-opacity"></div>
@@ -115,22 +115,34 @@
                class="flex justify-center animate-fade-in my-3">
             <div
               class="inline-flex items-center gap-2 px-4 py-2 rounded-xl text-[12px] font-semibold shadow-sm border-2 relative"
-              :class="message.error
-                ? 'bg-red-50 text-red-600 border-red-200'
-                : 'bg-blue-50 text-blue-600 border-blue-200'"
+              :class="getSystemMessageClass(message)"
             >
-              <CheckCircleIcon v-if="!message.error"
+              <CheckCircleIcon v-if="!message.error && !message.clickable"
                                class="w-3.5 h-3.5"/>
-              <ExclamationCircleIcon v-else
+              <ExclamationCircleIcon v-else-if="message.error"
                                      class="w-3.5 h-3.5"/>
+              <component v-else-if="message.clickable"
+                         :is="getMessageIcon(message)"
+                         class="w-3.5 h-3.5"/>
               <span>{{message.content}}</span>
+              <!-- 可点击的操作按钮 -->
+              <button
+                v-if="message.clickable"
+                @click="handleMessageAction(message)"
+                class="ml-2 px-2 py-0.5 rounded-lg text-[11px] font-bold transition-all"
+                :class="message.actionType === 'form' 
+                  ? 'bg-blue-200 hover:bg-blue-300 text-blue-700' 
+                  : 'bg-green-200 hover:bg-green-300 text-green-700'"
+              >
+                {{ message.actionLabel || '查看' }}
+              </button>
             </div>
           </div>
 
         </div>
 
-        <!-- 加载指示器 -->
-        <div v-if="loading || streamingStatus"
+        <!-- 加载指示器 - 支持并发显示 -->
+        <div v-if="hasActiveTasks || streamingStatus"
              class="mb-6 animate-fade-in">
           <div class="flex items-start gap-3">
             <div class="flex-shrink-0 w-9 h-9 rounded-xl bg-blue-100 flex items-center justify-center mt-0.5 border-2 border-blue-200 relative">
@@ -148,7 +160,14 @@
                   <div class="w-2 h-2 bg-blue-300 rounded-full animate-bounce"
                        style="animation-delay: 0.3s;"></div>
                 </div>
-                <span class="text-[14px] text-gray-700 font-semibold">{{streamingStatus || '正在思考...'}}</span>
+                <span class="text-[14px] text-gray-700 font-semibold">
+                  {{ streamingStatus || (pendingMessages.size > 1 ? `处理中 (${pendingMessages.size} 个请求)...` : '正在思考...') }}
+                </span>
+                <!-- 并发任务数标记 -->
+                <span v-if="pendingMessages.size > 1" 
+                      class="ml-2 px-2 py-0.5 rounded-full text-xs font-bold bg-blue-100 text-blue-600">
+                  {{ pendingMessages.size }}
+                </span>
               </div>
             </div>
           </div>
@@ -166,9 +185,10 @@
             ref="inputRef"
             v-model="inputMessage"
             @keydown.enter.exact.prevent="sendMessage"
-            :disabled="loading || !wsConnected"
-            :placeholder="!wsConnected ? '正在连接服务器...' : '输入你的问题，开启故障分析检测...'"
-            class="w-full resize-none rounded-2xl bg-white border-2 border-blue-200 px-5 py-3.5 pr-28 text-[15px] text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 disabled:bg-gray-50 disabled:text-gray-400 transition-all leading-[1.5] shadow-sm"
+            :disabled="isInputDisabled"
+            :placeholder="getInputPlaceholder"
+            class="w-full resize-none rounded-2xl bg-white border-2 px-5 py-3.5 pr-28 text-[15px] text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 disabled:bg-gray-50 disabled:text-gray-400 transition-all leading-[1.5] shadow-sm"
+            :class="isAnalyzing ? 'border-amber-300' : (pendingMessages.size > 0 ? 'border-green-300' : 'border-blue-200')"
             style="max-height: 200px; height: 57px"
           />
 
@@ -187,17 +207,17 @@
             <!-- 发送按钮 -->
             <button
               @click="sendMessage"
-              :disabled="loading || !inputMessage.trim() || !wsConnected"
+              :disabled="isSendDisabled"
               class="px-4 py-2.5 rounded-xl font-semibold text-[13px] transition-all flex items-center gap-2 shadow-sm transform relative"
-              :class="loading || !inputMessage.trim() || !wsConnected
+              :class="isSendDisabled
                 ? 'bg-gray-200 text-gray-400 cursor-not-allowed'
                 : 'bg-blue-500 text-white hover:bg-blue-600 active:scale-95 hover:shadow-md shadow-blue-500/20'"
             >
-              <PaperAirplaneIcon v-if="!loading"
+              <PaperAirplaneIcon v-if="!isSending"
                                  class="w-4 h-4"/>
               <ArrowPathIcon v-else
                              class="w-4 h-4 animate-spin"/>
-              <span>{{loading ? '发送中' : '发送'}}</span>
+              <span>{{isSending ? '发送中' : '发送'}}</span>
             </button>
           </div>
         </div>
@@ -233,7 +253,7 @@
 </template>
 
 <script setup>
-import { inject, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, inject, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { marked } from 'marked'
 import hljs from 'highlight.js'
 import katex from 'katex'
@@ -243,6 +263,8 @@ import {
   ArrowRightIcon,
   ChatBubbleLeftRightIcon,
   CheckCircleIcon,
+  ClipboardDocumentListIcon,
+  DocumentChartBarIcon,
   ExclamationCircleIcon,
   PaperAirplaneIcon,
   SparklesIcon,
@@ -279,6 +301,7 @@ const props = defineProps({
 const emit = defineEmits([
   'show-form', 
   'show-result', 
+  'show-analyzing',
   'hide-canvas',
   'analysis-start',
   'analysis-step',
@@ -298,6 +321,18 @@ const streamingStatus = chatStore ? chatStore.streamingStatus : ref('')
 const inputMessage = ref('')
 const messagesContainer = ref(null)
 const inputRef = ref(null)
+
+// 分析状态 - 分析进行中时仍允许对话
+const isAnalyzing = ref(false)
+
+// 并发对话追踪：存储进行中的消息 ID
+const pendingMessages = ref(new Set())
+
+// 分析任务存储：task_id -> 任务数据（报告、步骤等）
+const analysisTasks = ref(new Map())
+
+// 当前活跃的分析任务 ID
+const currentTaskId = ref(null)
 
 // WebSocket 状态
 const wsConnected = ref(false)
@@ -327,7 +362,39 @@ const suggestions = [
     description: '生成设备巡检分析报告',
     message: '我需要生成一份设备巡检报告',
   },
+  {
+    icon: '📚',
+    title: '知识库查询',
+    description: '查询轨道交通维护知识',
+    message: '什么是显黄故障？如何处理？',
+  },
 ]
+
+// 输入框占位符
+const getInputPlaceholder = computed(() => {
+  if (!wsConnected.value) return '正在连接服务器...'
+  if (isAnalyzing.value) return '分析进行中，您仍可继续提问或查询知识库...'
+  if (pendingMessages.value.size > 0) return `${pendingMessages.value.size} 个请求处理中，可继续发送新消息...`
+  return '输入你的问题，开启故障分析检测...'
+})
+
+// 是否正在发送消息（短暂状态，防止重复点击）
+const isSending = ref(false)
+
+// 输入框是否禁用（仅在未连接或正在发送瞬间禁用，并发处理中不禁用）
+const isInputDisabled = computed(() => {
+  return !wsConnected.value || isSending.value
+})
+
+// 发送按钮是否禁用
+const isSendDisabled = computed(() => {
+  return !inputMessage.value.trim() || !wsConnected.value || isSending.value
+})
+
+// 是否有任何请求在处理中
+const hasActiveTasks = computed(() => {
+  return pendingMessages.value.size > 0 || isAnalyzing.value
+})
 
 // ==================== WebSocket 连接管理 ====================
 const connectWebSocket = () => {
@@ -436,9 +503,33 @@ const handleWSMessage = (data) => {
 const handleAnalysisMessage = (action, payload) => {
   console.log(`🔬 [analysis] ${action}:`, payload)
   
+  const taskId = payload?.task_id
+  
+  // 确保任务存在于本地存储
+  const ensureTask = () => {
+    if (taskId && !analysisTasks.value.has(taskId)) {
+      analysisTasks.value.set(taskId, {
+        task_id: taskId,
+        input_data: payload?.input || payload?.defect_input || {},
+        status: 'running',
+        steps: [],
+        final_report: null,
+        thinking_processes: [],
+        created_at: new Date().toISOString()
+      })
+    }
+    return taskId ? analysisTasks.value.get(taskId) : null
+  }
+  
   if (action === 'analysis_start') {
     // 分析开始 - 通知父组件展开 Canvas 并切换到分析视图
+    isAnalyzing.value = true
+    currentTaskId.value = taskId
+    const task = ensureTask()
+    if (task) task.status = 'running'
+    
     emit('analysis-start', {
+      task_id: taskId,
       message: payload?.message || '开始分析...',
       input: payload?.defect_input || payload?.input || {},
       timestamp: payload?.timestamp
@@ -447,11 +538,21 @@ const handleAnalysisMessage = (action, payload) => {
     addMessage({
       id: Date.now(),
       type: 'system',
-      content: '🔄 故障分析任务已启动，请关注右侧面板的执行情况',
+      content: `🔄 故障分析任务已启动 [${taskId || ''}]（点击可查看分析流程）。分析期间您仍可继续对话。`,
+      clickable: true,
+      actionType: 'analyzing',
+      actionLabel: '查看流程',
+      taskId: taskId,
+      analyzingData: {
+        task_id: taskId,
+        input: payload?.defect_input || payload?.input || {},
+        timestamp: payload?.timestamp,
+      },
     })
   } else if (action === 'thinking_step') {
-    // 思考步骤 - 转发给父组件显示在 Canvas 中
-    emit('analysis-step', {
+    // 思考步骤 - 存储并转发给父组件
+    const task = ensureTask()
+    const stepData = {
       node: payload?.node || 'process',
       title: payload?.title || '处理中',
       summary: payload?.content || payload?.summary || '',
@@ -459,54 +560,106 @@ const handleAnalysisMessage = (action, payload) => {
       data: payload?.data,
       status: 'complete',
       step_number: payload?.step_number
-    })
+    }
+    if (task) task.steps.push(stepData)
+    emit('analysis-step', stepData)
   } else if (action === 'node_start') {
     // 节点开始
-    emit('analysis-step', {
+    const task = ensureTask()
+    const stepData = {
       node: payload?.node || 'process',
       title: payload?.title || `${payload?.node || '节点'} 开始`,
       summary: payload?.message || '正在处理...',
       status: 'running'
-    })
+    }
+    if (task) task.steps.push(stepData)
+    emit('analysis-step', stepData)
   } else if (action === 'node_complete') {
     // 节点完成 - 更新步骤状态
-    emit('analysis-step', {
+    const task = ensureTask()
+    const stepData = {
       node: payload?.node || 'process',
       title: payload?.title || `${payload?.node || '节点'} 完成`,
       summary: payload?.message || '处理完成',
       content: payload?.content,
       data: payload?.data,
       status: 'complete'
-    })
+    }
+    if (task) task.steps.push(stepData)
+    emit('analysis-step', stepData)
   } else if (action === 'final_report') {
-    // 最终报告 - 这是真正的完成消息，添加系统提示
-    emit('analysis-complete', {
-      final_report: payload?.final_report || payload?.content,
+    // 最终报告 - 存储并添加系统提示
+    // 注意：report_markdown 是 fault_analysis_core_vector 使用的字段名
+    // final_report 是其他模块使用的字段名
+    isAnalyzing.value = false
+    const task = ensureTask()
+    
+    // 兼容多种字段名
+    const finalReport = payload?.final_report || payload?.report_markdown || payload?.content || ''
+    
+    console.log(`📊 [final_report] 收到报告, task_id=${taskId}, 长度=${finalReport.length}, payload_keys=`, Object.keys(payload || {}))
+    
+    const resultData = {
+      task_id: taskId,
+      final_report: finalReport,
+      report_markdown: finalReport,  // 兼容字段
       retry_count: payload?.retry_count || 0,
       thinking_processes: payload?.thinking_processes || [],
       input: payload?.input || payload?.defect_input || {},
       timestamp: payload?.timestamp || new Date().toISOString()
-    })
+    }
+    
+    // 存储到本地任务
+    if (task) {
+      task.status = 'completed'
+      task.final_report = finalReport
+      task.thinking_processes = resultData.thinking_processes
+      task.completed_at = new Date().toISOString()
+      console.log(`✅ [analysis] 任务完成: ${taskId}，报告长度: ${task.final_report?.length || 0}`)
+    }
+    
+    emit('analysis-complete', resultData)
     
     addMessage({
       id: Date.now(),
       type: 'system',
-      content: '✅ 故障分析完成，请在右侧面板查看详细报告',
+      content: `✅ 故障分析完成 [${taskId || ''}]，请点击查看详细报告`,
+      clickable: true,
+      actionType: 'result',
+      actionLabel: '查看报告',
+      taskId: taskId,
+      resultData: resultData,
     })
   } else if (action === 'analysis_complete') {
     // 分析完成统计（在 final_report 之后发送，不添加消息避免重复）
+    isAnalyzing.value = false
+    const task = ensureTask()
+    
+    // 兼容多种字段名
+    const finalReport = payload?.final_report || payload?.report_markdown || ''
+    if (task && finalReport) {
+      task.status = 'completed'
+      task.final_report = finalReport
+      task.thinking_processes = payload?.thinking_processes || []
+    }
     console.log('📊 分析统计:', payload)
-    // 只触发事件，不添加系统消息（已在 final_report 中添加）
     emit('analysis-complete', payload)
   } else if (action === 'error') {
     // 分析错误
+    isAnalyzing.value = false
+    const task = ensureTask()
+    if (task) {
+      task.status = 'error'
+      task.error = payload?.error
+    }
     emit('analysis-error', payload)
     
     addMessage({
       id: Date.now(),
       type: 'system',
-      content: `❌ 分析出错: ${payload?.error || '未知错误'}`,
+      content: `❌ 分析出错 [${taskId || ''}]: ${payload?.error || '未知错误'}`,
       error: true,
+      taskId: taskId,
     })
   }
 }
@@ -541,7 +694,13 @@ const handleSystemMessage = (action, payload) => {
 }
 
 const handleChatMessage = (action, payload) => {
+  const messageId = payload?.message_id
+  
   if (action === 'start') {
+    // 追踪新的消息处理
+    if (messageId) {
+      pendingMessages.value.add(messageId)
+    }
     loading.value = true
     streamingStatus.value = payload?.message || '开始处理...'
 
@@ -558,26 +717,40 @@ const handleChatMessage = (action, payload) => {
         content: payload.content,
         node: payload.node,
         node_path: payload.node_path,
+        messageId: messageId, // 关联消息 ID
       })
     }
   } else if (action === 'complete') {
-    loading.value = false
-    streamingStatus.value = ''
+    // 移除已完成的消息追踪
+    if (messageId) {
+      pendingMessages.value.delete(messageId)
+    }
+    
+    // 只有当所有消息都处理完才清除 loading 状态
+    if (pendingMessages.value.size === 0) {
+      loading.value = false
+      streamingStatus.value = ''
+    }
 
-    addMessage({
-      id: Date.now(),
-      type: 'system',
-      content: '处理完成！',
-    })
+    // 不再添加"处理完成"系统消息，避免并发时消息混乱
+    console.log(`✅ 消息处理完成 [${messageId || 'unknown'}]`)
   } else if (action === 'error') {
-    loading.value = false
-    streamingStatus.value = ''
+    // 移除失败的消息追踪
+    if (messageId) {
+      pendingMessages.value.delete(messageId)
+    }
+    
+    if (pendingMessages.value.size === 0) {
+      loading.value = false
+      streamingStatus.value = ''
+    }
 
     addMessage({
       id: Date.now(),
       type: 'system',
       content: `❌ ${payload?.error || '处理失败'}`,
       error: true,
+      messageId: messageId,
     })
   }
 }
@@ -589,16 +762,57 @@ const handleToolMessage = (action, payload) => {
   } else if (action === 'result') {
     // 工具结果 - 不显示，仅记录日志
     console.log('工具执行完成:', payload?.tool_name)
+  } else if (action === 'knowledge_query') {
+    // 知识库查询开始
+    console.log('📚 知识库查询:', payload?.query)
+    addMessage({
+      id: Date.now(),
+      type: 'system',
+      content: `📚 正在查询知识库: "${payload?.query?.substring(0, 30)}..."`,
+    })
+  } else if (action === 'knowledge_result') {
+    // 知识库查询完成
+    console.log('📚 知识库查询完成:', payload?.result_length, '字符')
   } else if (action === 'activate_form') {
     // 激活表单 - 通知父组件展开 Canvas 并显示表单
     emit('show-form', payload?.prefill_data || null)
     
-    // 添加系统消息提示
+    // 添加可点击的系统消息
     addMessage({
       id: Date.now(),
       type: 'system',
       content: '已打开故障检测工单，请在右侧面板填写信息',
+      clickable: true,
+      actionType: 'form',
+      actionLabel: '打开工单',
+      prefillData: payload?.prefill_data || null,
     })
+  } else if (action === 'task_created') {
+    // 任务创建 - 存储任务信息
+    const taskId = payload?.task_id
+    if (taskId) {
+      analysisTasks.value.set(taskId, {
+        task_id: taskId,
+        input_data: payload?.input_data || {},
+        status: 'running',
+        steps: [],
+        final_report: null,
+        thinking_processes: [],
+        created_at: new Date().toISOString()
+      })
+      currentTaskId.value = taskId
+      console.log(`📋 任务创建: ${taskId}`, payload?.input_data)
+    }
+  } else if (action === 'task_detail') {
+    // 任务详情响应 - 更新本地存储并显示
+    const taskId = payload?.task_id
+    if (taskId) {
+      analysisTasks.value.set(taskId, payload)
+      // 如果有最终报告，显示结果
+      if (payload?.final_report) {
+        emit('show-result', payload)
+      }
+    }
   } else if (action === 'form_processing') {
     loading.value = true
     streamingStatus.value = payload?.message || '正在处理表单...'
@@ -614,33 +828,94 @@ const handleToolMessage = (action, payload) => {
       type: 'system',
       content: `❌ ${payload?.error || '表单处理失败'}`,
       error: true,
+      taskId: payload?.task_id,
     })
   } else if (action === 'analysis_start') {
     // 分析开始 - 通知父组件开始分析
+    const taskId = payload?.task_id
+    if (taskId && analysisTasks.value.has(taskId)) {
+      const task = analysisTasks.value.get(taskId)
+      task.status = 'running'
+    }
+    currentTaskId.value = taskId
+    isAnalyzing.value = true
+    
     emit('analysis-start', payload)
     
     addMessage({
       id: Date.now(),
       type: 'system',
-      content: '🔄 故障分析任务已启动，请关注右侧面板的执行情况',
+      content: `🔄 故障分析任务已启动 [${taskId || ''}]（点击可查看分析流程）`,
+      clickable: true,
+      actionType: 'analyzing',
+      actionLabel: '查看流程',
+      taskId: taskId,
+      analyzingData: payload,
     })
   } else if (action === 'analysis_step') {
-    // 分析步骤 - 通知父组件添加步骤
+    // 分析步骤 - 存储并通知父组件
+    const taskId = payload?.task_id
+    if (taskId && analysisTasks.value.has(taskId)) {
+      const task = analysisTasks.value.get(taskId)
+      task.steps.push(payload)
+    }
     emit('analysis-step', payload)
-  } else if (action === 'analysis_complete') {
-    // 分析完成 - 通知父组件展示结果（不添加系统消息，因为 final_report 已经添加了）
-    emit('analysis-complete', payload)
+  } else if (action === 'analysis_complete' || action === 'final_report') {
+    // 分析完成 - 存储最终报告
+    // 兼容多种字段名：final_report, report_markdown
+    const taskId = payload?.task_id
+    const finalReport = payload?.final_report || payload?.report_markdown || ''
     
-    // 注意：系统消息已在 handleAnalysisMessage 的 final_report 中添加，这里不再重复添加
+    console.log(`📊 [tool/${action}] task_id=${taskId}, 报告长度=${finalReport.length}, payload_keys=`, Object.keys(payload || {}))
+    
+    if (taskId && analysisTasks.value.has(taskId)) {
+      const task = analysisTasks.value.get(taskId)
+      task.status = 'completed'
+      task.final_report = finalReport
+      task.thinking_processes = payload?.thinking_processes || []
+      task.completed_at = new Date().toISOString()
+      console.log(`✅ 任务完成: ${taskId}，报告长度: ${task.final_report?.length || 0}`)
+    }
+    
+    isAnalyzing.value = false
+    
+    // 标准化 payload 确保有 final_report 字段
+    const normalizedPayload = {
+      ...payload,
+      final_report: finalReport,
+      report_markdown: finalReport
+    }
+    emit('analysis-complete', normalizedPayload)
+    
+    // 添加可点击的完成消息
+    addMessage({
+      id: Date.now(),
+      type: 'system',
+      content: `✅ 故障分析完成 [${taskId || ''}]，请点击查看详细报告`,
+      clickable: true,
+      actionType: 'result',
+      actionLabel: '查看报告',
+      taskId: taskId,
+      resultData: normalizedPayload,
+    })
   } else if (action === 'analysis_error') {
     // 分析错误
+    const taskId = payload?.task_id
+    if (taskId && analysisTasks.value.has(taskId)) {
+      const task = analysisTasks.value.get(taskId)
+      task.status = 'error'
+      task.error = payload?.error
+    }
+    
+    isAnalyzing.value = false
     emit('analysis-error', payload)
     
     addMessage({
       id: Date.now(),
       type: 'system',
-      content: `❌ 分析出错: ${payload?.error || '未知错误'}`,
+      content: `❌ 分析出错 [${taskId || ''}]: ${payload?.error || '未知错误'}`,
       error: true,
+      taskId: taskId,
     })
   } else if (action === 'analysis_result') {
     // 旧版分析结果 - 保持兼容
@@ -650,8 +925,26 @@ const handleToolMessage = (action, payload) => {
       id: Date.now(),
       type: 'system',
       content: '故障分析完成，请在右侧面板查看详细报告',
+      clickable: true,
+      actionType: 'result',
+      actionLabel: '查看报告',
+      resultData: payload,
     })
   }
+}
+
+// 获取任务数据
+const getTask = (taskId) => {
+  return analysisTasks.value.get(taskId)
+}
+
+// 请求任务详情（从后端获取）
+const requestTaskDetail = (taskId) => {
+  sendWSMessage({
+    type: 'tool',
+    action: 'get_task',
+    data: { task_id: taskId }
+  })
 }
 
 // ==================== 消息操作 ====================
@@ -671,24 +964,39 @@ const addMessage = (message) => {
 }
 
 const sendMessage = () => {
-  if (!inputMessage.value.trim() || loading.value || !wsConnected.value) return
+  if (!inputMessage.value.trim() || !wsConnected.value || isSending.value) return
 
   const userMessage = inputMessage.value.trim()
   inputMessage.value = ''
+  
+  // 设置发送状态（短暂，仅防止重复点击）
+  isSending.value = true
+
+  // 生成本地消息 ID 用于关联（后端会返回自己的 message_id）
+  const localMsgId = Date.now()
 
   // 添加用户消息
   addMessage({
-    id: Date.now(),
+    id: localMsgId,
     type: 'user',
     content: userMessage,
   })
 
   // 发送到 WebSocket
-  sendWSMessage({
+  const sent = sendWSMessage({
     type: 'chat',
     action: 'send',
     data: { message: userMessage },
   })
+  
+  if (sent) {
+    console.log(`📤 消息已发送: "${userMessage.substring(0, 30)}..."`)
+  }
+  
+  // 短暂延迟后恢复发送状态（允许连续发送新消息）
+  setTimeout(() => {
+    isSending.value = false
+  }, 300)
 }
 
 const sendQuickMessage = (message) => {
@@ -722,6 +1030,62 @@ const sendFormData = (formData) => {
 }
 
 // ==================== 辅助函数 ====================
+// 获取系统消息样式
+const getSystemMessageClass = (message) => {
+  if (message.error) return 'bg-red-50 text-red-600 border-red-200'
+  if (message.clickable) {
+    if (message.actionType === 'form') return 'bg-blue-50 text-blue-600 border-blue-200 cursor-pointer hover:bg-blue-100 transition-colors'
+    if (message.actionType === 'result') return 'bg-green-50 text-green-600 border-green-200 cursor-pointer hover:bg-green-100 transition-colors'
+  }
+  return 'bg-blue-50 text-blue-600 border-blue-200'
+}
+
+// 获取消息图标
+const getMessageIcon = (message) => {
+  if (message.actionType === 'form') return ClipboardDocumentListIcon
+  if (message.actionType === 'result') return DocumentChartBarIcon
+  return CheckCircleIcon
+}
+
+// 处理消息点击动作
+const handleMessageAction = (message) => {
+  if (message.actionType === 'form') {
+    emit('show-form', message.prefillData || null)
+  } else if (message.actionType === 'analyzing') {
+    // 如果有 taskId，从本地存储获取任务数据
+    const taskId = message.taskId
+    if (taskId && analysisTasks.value.has(taskId)) {
+      const task = analysisTasks.value.get(taskId)
+      emit('show-analyzing', { ...message.analyzingData, task })
+    } else {
+      emit('show-analyzing', message.analyzingData || null)
+    }
+  } else if (message.actionType === 'result') {
+    // 优先从本地存储获取完整的任务数据
+    const taskId = message.taskId
+    if (taskId && analysisTasks.value.has(taskId)) {
+      const task = analysisTasks.value.get(taskId)
+      console.log(`📊 点击查看报告 [${taskId}]，报告长度: ${task.final_report?.length || 0}`)
+      emit('show-result', {
+        task_id: taskId,
+        final_report: task.final_report,
+        thinking_processes: task.thinking_processes,
+        input: task.input_data,
+        steps: task.steps,
+        status: task.status,
+        ...message.resultData
+      })
+    } else if (message.resultData) {
+      emit('show-result', message.resultData)
+    } else {
+      // 如果本地没有数据，请求后端
+      if (taskId) {
+        requestTaskDetail(taskId)
+      }
+    }
+  }
+}
+
 const renderMarkdown = (content) => {
   if (!content) return ''
   try {
@@ -804,6 +1168,11 @@ watch(() => loading.value, () => {
 defineExpose({
   sendFormData,
   wsConnected,
+  isAnalyzing,
+  analysisTasks,
+  currentTaskId,
+  getTask,
+  requestTaskDetail,
 })
 </script>
 

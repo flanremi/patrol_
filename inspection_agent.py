@@ -243,7 +243,186 @@ def full_retriever(question: str) -> str:
     return combined
 
 
+# ===================== 知识库检索工具 =====================
+_qa_vector_retriever = None
+
+def _get_vector_retriever():
+    """获取向量检索器（用于知识库查询）"""
+    global _qa_vector_retriever
+    if _qa_vector_retriever is not None:
+        return _qa_vector_retriever
+    try:
+        from rag_config import VECTOR_DB_DIR, VECTOR_COLLECTION_NAME, EMBEDDING_MODEL_NAME
+        from langchain_community.vectorstores import Chroma
+        from langchain_community.embeddings import HuggingFaceEmbeddings
+        
+        embeddings = HuggingFaceEmbeddings(
+            model_name=EMBEDDING_MODEL_NAME,
+            model_kwargs={"device": "cpu"},
+            encode_kwargs={"normalize_embeddings": True},
+        )
+        chroma = Chroma(
+            persist_directory=VECTOR_DB_DIR,
+            embedding_function=embeddings,
+            collection_name=VECTOR_COLLECTION_NAME,
+        )
+        # 打印向量库基础信息（便于排障）
+        try:
+            count = chroma._collection.count()  # noqa: SLF001 (仅用于诊断)
+        except Exception:
+            count = None
+        print(f"📦 [QA向量库] persist_directory={VECTOR_DB_DIR}")
+        print(f"📦 [QA向量库] collection_name={VECTOR_COLLECTION_NAME}")
+        if count is not None:
+            print(f"📦 [QA向量库] collection_count={count}")
+
+        _qa_vector_retriever = chroma.as_retriever(search_kwargs={"k": 6})
+        return _qa_vector_retriever
+    except Exception as e:
+        print(f"⚠️ 向量检索器初始化失败: {e}")
+        return None
+
+
+def _query_knowledge_base_internal(query: str) -> str:
+    """内部知识库查询实现"""
+    # 与系统其它模块保持一致：以 rag_config.RAG_MODE 为准（避免环境变量缺失导致误判）
+    try:
+        from rag_config import RAG_MODE as rag_mode
+    except Exception:
+        rag_mode = os.getenv("RAG_MODE", "vector").strip().lower()
+    rag_mode = (rag_mode or "vector").strip().lower()
+    
+    results = []
+    
+    print(f"\n{'='*70}")
+    print(f"📚 [知识库查询工具] query_knowledge_base 被调用")
+    print(f"{'='*70}")
+    print(f"🔍 查询内容: {query}")
+    print(f"📌 RAG 模式: {rag_mode}")
+    print(f"{'-'*70}")
+    
+    # 根据 RAG_MODE 选择检索方式
+    if rag_mode == "vector":
+        # 纯向量库检索
+        print("🔎 使用向量数据库检索...")
+        retriever = _get_vector_retriever()
+        if retriever:
+            try:
+                docs = retriever.invoke(query)
+                if docs:
+                    results = [doc.page_content for doc in docs]
+                    print(f"✅ 检索成功！命中文档数: {len(docs)}")
+                    print(f"{'-'*70}")
+                    for i, doc in enumerate(docs, 1):
+                        source = doc.metadata.get("source", "未知来源") if hasattr(doc, "metadata") else "未知来源"
+                        content_preview = doc.page_content[:300] + "..." if len(doc.page_content) > 300 else doc.page_content
+                        print(f"📄 文档 {i}:")
+                        print(f"   来源: {source}")
+                        print(f"   内容: {content_preview}")
+                        print()
+                else:
+                    print("⚠️ 未检索到相关文档")
+            except Exception as e:
+                print(f"❌ 向量检索失败: {e}")
+        else:
+            print("❌ 向量检索器未初始化")
+    else:
+        # 图谱+向量混合检索
+        print("🔎 使用图谱+向量混合检索...")
+        if graph_db is not None:
+            print("  → 执行知识图谱检索...")
+            graph_result = graph_retriever(query)
+            if graph_result and graph_result != "未找到相关图谱数据":
+                results.append(f"【知识图谱检索结果】\n{graph_result}")
+                print(f"  ✅ 图谱检索成功，结果长度: {len(graph_result)} 字符")
+        else:
+            print("  ⚠️ 图谱数据库未连接")
+        
+        if vector_retriever is not None:
+            print("  → 执行向量检索...")
+            try:
+                docs = vector_retriever.invoke(query)
+                if docs:
+                    vector_content = "\n".join([doc.page_content for doc in docs[:5]])
+                    results.append(f"【向量检索结果】\n{vector_content}")
+                    print(f"  ✅ 向量检索成功，命中文档数: {len(docs)}")
+            except Exception as e:
+                print(f"  ❌ 向量检索失败: {e}")
+        else:
+            print("  ⚠️ 向量检索器未初始化")
+    
+    # 打印最终结果摘要
+    print(f"{'-'*70}")
+    if results:
+        combined_result = "\n\n".join(results)
+        print(f"📊 检索结果汇总:")
+        print(f"   总结果数: {len(results)} 条")
+        print(f"   结果总长度: {len(combined_result)} 字符")
+        # 打印结果预览
+        preview = combined_result[:500] + "..." if len(combined_result) > 500 else combined_result
+        print(f"   内容预览:\n{preview}")
+    else:
+        print("📊 检索结果: 未找到相关信息")
+    print(f"{'='*70}\n")
+    
+    if not results:
+        return "未在知识库中找到相关信息。"
+    
+    return "\n\n".join(results)
+
+
 # ===================== 工具定义 =====================
+@tool
+def query_knowledge_base(query: str) -> str:
+    """查询知识库工具，根据用户的问题检索知识库并返回相关信息。
+    
+    当用户询问轨道交通相关的技术问题、维护知识、故障案例、部件信息等内容时，
+    应该调用此工具从知识库中检索相关信息来回答用户。
+
+    Args:
+        query: 用户的查询问题
+    
+    Returns:
+        知识库中检索到的相关信息
+    """
+    import asyncio
+    
+    print(f"\n🚀 [工具调用] query_knowledge_base")
+    print(f"   参数 query = \"{query}\"")
+    
+    # 获取 WebSocket 回调
+    callback = get_ws_callback()
+    if callback:
+        try:
+            loop = asyncio.get_running_loop()
+            loop.create_task(callback("tool", "knowledge_query", {
+                "query": query,
+                "message": "正在检索知识库..."
+            }))
+        except RuntimeError:
+            pass
+    
+    # 执行知识库检索
+    result = _query_knowledge_base_internal(query)
+    
+    print(f"\n✅ [工具返回] query_knowledge_base 执行完成")
+    print(f"   返回结果长度: {len(result)} 字符\n")
+    
+    # 通知前端检索完成
+    if callback:
+        try:
+            loop = asyncio.get_running_loop()
+            loop.create_task(callback("tool", "knowledge_result", {
+                "query": query,
+                "result_length": len(result),
+                "message": "知识库检索完成"
+            }))
+        except RuntimeError:
+            pass
+    
+    return result
+
+
 @tool
 def prepare_inspection_form(
     part_name: str = "辅助逆变器",
@@ -252,16 +431,28 @@ def prepare_inspection_form(
     detect_time: str = "2025-11-23 10:30",
     detect_confidence: float = 0.95
 ) -> str:
-    """唤醒故障检测工单表单，当用户想要进行故障排查、巡检、检测时必须调用此工具。
+    """打开故障检测工单表单。
+    
+    【重要】只有用户明确说以下话时才能调用此工具：
+    - "开始故障分析"
+    - "提交工单"
+    - "开始排查"
+    - "确认分析"
+    - "好的，开始吧"
+    
+    【禁止】用户只是提问时（如"什么是显黄"）不要调用此工具，应该用 query_knowledge_base。
 
     Args:
-        part_name: 部件名称，如"辅助逆变器"、"轴承"、"制动器"
-        defect_type: 缺陷类型，如"显黄"、"温度异常"、"振动过大"
-        part_position: 部件位置，如"0116车"、"A轴"、"前转向架"
+        part_name: 部件名称
+        defect_type: 缺陷类型
+        part_position: 部件位置
         detect_time: 检测时间
-        detect_confidence: 检测置信度，0到1之间
+        detect_confidence: 检测置信度
     """
     import asyncio
+    
+    print(f"\n🚀 [工具调用] prepare_inspection_form")
+    print(f"   参数: part_name={part_name}, defect_type={defect_type}, part_position={part_position}")
     
     # 如果检测时间为空，使用当前时间
     if not detect_time:
@@ -530,7 +721,19 @@ class InspectionAgent:
     """巡检智能体 - 使用 ReAct 模式"""
 
     def __init__(self):
-        self.tools = [prepare_inspection_form, run_fault_analysis]
+        # 工具顺序很重要：query_knowledge_base 放第一位，作为默认工具
+        self.tools = [query_knowledge_base, prepare_inspection_form, run_fault_analysis]
+        
+        # 打印工具列表确认
+        print("\n" + "="*70)
+        print("🤖 [InspectionAgent] 初始化巡检智能体")
+        print("="*70)
+        print("📦 已注册工具列表:")
+        for i, tool in enumerate(self.tools, 1):
+            tool_name = getattr(tool, 'name', str(tool))
+            print(f"   {i}. {tool_name}")
+        print("="*70 + "\n")
+        
         self.graph = self._build_graph()
         self.send_callback: Optional[Callable[[str, str, dict], Awaitable[None]]] = None
 
@@ -538,23 +741,41 @@ class InspectionAgent:
         """构建 ReAct Agent 图 - 只有一个 agent 节点"""
         from langgraph.prebuilt import create_react_agent
         
-        # 系统提示 - 更明确地要求使用工具
-        system_prompt = """你是一个轨道交通巡检智能助手。你必须使用工具来完成任务。
+        # 系统提示 - 优化版本
+        system_prompt = """你是一个专业的轨道交通巡检智能助手。请根据上下文回答用户问题。
 
-【重要】当用户提到以下任何关键词时，你必须立即调用 prepare_inspection_form 工具：
-- 故障、检测、巡检、排查、缺陷、异常、维修、维护、检查、分析、诊断
-- 温度异常、振动、噪音、磨损、松动、裂纹、显黄
+## 核心职责
+1. 回答用户关于轨道交通设备、故障、维护等方面的问题
+2. 在用户需要时，协助启动故障分析流程
 
-你有以下工具：
-1. prepare_inspection_form: 唤醒故障检测工单表单。当用户想要进行故障排查时必须调用此工具。
-2. run_fault_analysis: 执行故障分析，进行知识库检索。
+## 工具使用规则
 
-【工作流程】
-1. 用户表达故障排查意图 → 必须调用 prepare_inspection_form
-2. 从用户描述中提取信息填入工具参数（part_name, defect_type, part_position等）
-3. 如果用户没有提供具体信息，使用默认值调用工具
+### query_knowledge_base - 知识库查询（默认使用）
+- 用户提问时，优先调用此工具从知识库检索相关信息
+- 适用场景：技术问题、故障原因、维护方法、设备规格、操作流程等
+- 示例问题："什么是显黄"、"轴承温度异常原因"、"如何维护辅助逆变器"
 
-现在，请根据用户输入决定是否调用工具。如果用户提到任何与故障、检测、巡检相关的内容，你必须调用 prepare_inspection_form 工具。"""
+### prepare_inspection_form - 故障分析工单（用户确认后使用）
+- 仅当用户**明确表示**要进行故障分析时才调用
+- 触发关键词："开始故障分析"、"开始排查"、"提交工单"、"开始检测"、"确认分析"、"好的，开始"
+- 调用前必须有用户的明确确认意图
+
+### run_fault_analysis - 故障深度分析（系统调用）
+- 用户提交工单后由系统自动执行，无需手动调用
+
+## 对话策略
+
+1. **回答问题**：用户提问时，先调用 query_knowledge_base 检索知识库，然后基于检索结果回答
+
+2. **引导分析**：如果用户的问题涉及具体故障场景（如某个部件异常），在回答后可以提示：
+   "如果您需要对此进行深度故障分析，可以说**'开始故障分析'**来启动检测流程。"
+
+3. **确认后执行**：只有用户明确说"开始"、"确认"、"好的"等确认词时，才调用 prepare_inspection_form
+
+## 重要提醒
+- 不要在用户只是提问时就打开工单表单
+- 保持对话的连贯性，记住之前讨论的内容
+- 回答要专业、简洁、有帮助"""
 
         # 创建 ReAct Agent
         return create_react_agent(
@@ -582,8 +803,8 @@ class InspectionAgent:
                     "name": "ReAct Agent",
                     "type": "react",
                     "level": 0,
-                    "description": "ReAct 智能体节点，接入2个工具",
-                    "tools": ["prepare_inspection_form", "run_fault_analysis"]
+                    "description": "ReAct 智能体节点，接入3个工具",
+                    "tools": ["query_knowledge_base", "prepare_inspection_form", "run_fault_analysis"]
                 },
                 {
                     "id": "__end__",
@@ -601,7 +822,7 @@ class InspectionAgent:
             "statistics": {
                 "node_count": 3,
                 "edge_count": 3,
-                "tool_count": 2
+                "tool_count": 3
             }
         }
 
@@ -609,14 +830,19 @@ class InspectionAgent:
         """获取工具信息"""
         return [
             {
+                "id": "query_knowledge_base",
+                "name": "query_knowledge_base",
+                "description": "知识库查询工具（默认工具）- 根据用户问题检索知识库并返回相关信息"
+            },
+            {
                 "id": "prepare_inspection_form",
                 "name": "prepare_inspection_form",
-                "description": "需求完善工具 - 唤醒前端的故障检测工单表单，预填充故障信息"
+                "description": "故障工单表单 - 用户明确确认后打开故障检测工单"
             },
             {
                 "id": "run_fault_analysis",
                 "name": "run_fault_analysis",
-                "description": "执行故障分析，基于输入的故障信息进行检索和分析"
+                "description": "故障分析工具 - 用户提交工单后系统自动执行"
             }
         ]
 
@@ -625,7 +851,22 @@ class InspectionAgent:
         message: str,
         send_callback: Callable[[str, str, dict], Awaitable[None]]
     ):
-        """处理用户消息"""
+        """处理用户消息（无历史记录，向后兼容）"""
+        await self.process_message_with_history(message, [], send_callback)
+
+    async def process_message_with_history(
+        self,
+        message: str,
+        history_messages: List,
+        send_callback: Callable[[str, str, dict], Awaitable[None]]
+    ):
+        """处理用户消息（带历史记录）
+        
+        Args:
+            message: 当前用户消息
+            history_messages: 历史消息列表（LangChain 格式）
+            send_callback: WebSocket 回调函数
+        """
         import asyncio
         
         self.send_callback = send_callback
@@ -639,13 +880,21 @@ class InspectionAgent:
         # 设置全局 WebSocket 回调和主事件循环，让工具函数可以直接发送消息
         set_ws_callback(send_callback, main_loop)
 
-        # ReAct Agent 使用简单的消息输入
-        inputs = {"messages": [HumanMessage(content=message)]}
+        # 构建消息列表：历史消息 + 当前消息
+        all_messages = list(history_messages) + [HumanMessage(content=message)]
+        inputs = {"messages": all_messages}
 
         # 流式执行图（使用异步流式执行以支持异步工具）
+        print(f"\n{'='*70}")
+        print(f"📩 [InspectionAgent] 收到用户消息: {message}")
+        print(f"📚 历史消息数量: {len(history_messages)}")
+        print(f"{'='*70}")
+        
         try:
             async for chunk in self.graph.astream(inputs):
                 for node_name, node_output in chunk.items():
+                    print(f"\n🔄 [节点执行] {node_name}")
+                    
                     # 发送节点开始消息
                     await send_callback("system", "node_start", {
                         "node": node_name,
@@ -655,10 +904,13 @@ class InspectionAgent:
                     # 处理消息
                     if "messages" in node_output:
                         for msg in node_output["messages"]:
+                            print(f"   消息类型: {getattr(msg, 'type', 'unknown')}")
+                            
                             if hasattr(msg, "type"):
                                 if msg.type == "ai":
                                     # AI 消息（有内容时才发送）
                                     if msg.content:
+                                        print(f"   📝 AI 回复: {msg.content[:100]}...")
                                         await send_callback("chat", "message", {
                                             "type": "ai",
                                             "content": msg.content,
@@ -667,9 +919,12 @@ class InspectionAgent:
 
                                     # 检查是否有工具调用
                                     if hasattr(msg, "tool_calls") and msg.tool_calls:
+                                        print(f"   🔧 工具调用数量: {len(msg.tool_calls)}")
                                         for tool_call in msg.tool_calls:
                                             tool_name = tool_call.get("name", "")
                                             tool_args = tool_call.get("args", {})
+                                            print(f"   🔧 调用工具: {tool_name}")
+                                            print(f"      参数: {tool_args}")
 
                                             await send_callback("tool", "call", {
                                                 "tool_name": tool_name,

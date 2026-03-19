@@ -163,18 +163,32 @@ def initialize(
 
 
 def clean_json_output(raw_output: str) -> str:
+    """清理 LLM 返回的 JSON 字符串，去除 markdown 代码块等格式"""
     if not isinstance(raw_output, str):
         raise TypeError("输入必须为字符串类型")
     cleaned = raw_output.strip()
+    
+    # 去除 markdown 代码块标记
     cleaned = re.sub(r'^```(?:json)?\s*', '', cleaned, flags=re.IGNORECASE)
     cleaned = re.sub(r'```\s*$', '', cleaned)
-    cleaned = re.sub(r',\s*([}\]])', r'\1', cleaned)
-    cleaned = re.sub(r'(?<!\\)\'', '"', cleaned)
+    
+    # 尝试提取 JSON 对象（处理 LLM 可能返回的额外文字）
+    json_match = re.search(r'\{[\s\S]*\}', cleaned)
+    if json_match:
+        cleaned = json_match.group()
+    
+    # 清理常见 JSON 格式问题
+    cleaned = re.sub(r',\s*([}\]])', r'\1', cleaned)  # 移除尾随逗号
+    cleaned = re.sub(r'(?<!\\)\'', '"', cleaned)  # 单引号转双引号
+    
     try:
         json.loads(cleaned)
         return cleaned
-    except json.JSONDecodeError:
-        return "{}"
+    except json.JSONDecodeError as e:
+        print(f"⚠️ [clean_json_output] JSON 解析失败: {e}")
+        print(f"⚠️ [clean_json_output] 原始内容: {raw_output[:300]}...")
+        # 返回原始清理后的内容，让上层处理
+        raise ValueError(f"无法解析 JSON: {e}")
 
 
 def format_confidence(confidence: Any) -> str:
@@ -292,15 +306,28 @@ def extraction_node(state: State) -> State:
     response = None
     try:
         response = _llm.invoke([system_prompt])
+        print(f"📊 [信息提取节点] LLM 返回: {response.content[:500]}...")
         json_data = clean_json_output(response.content)
+        print(f"📊 [信息提取节点] 清理后 JSON: {json_data[:500]}...")
         extraction_result = json.loads(json_data)
-    except Exception:
+        print(f"✅ [信息提取节点] 解析成功: {list(extraction_result.keys())}")
+        
+        # 验证必要字段存在
+        if not extraction_result.get('core_fault_phenomenon'):
+            extraction_result['core_fault_phenomenon'] = ['无具体故障现象']
+        if not extraction_result.get('maintenance_key_points'):
+            extraction_result['maintenance_key_points'] = ['无历史维护记录']
+            
+    except Exception as e:
+        print(f"❌ [信息提取节点] 处理失败: {e}")
+        if response:
+            print(f"❌ [信息提取节点] 原始返回: {response.content[:500]}...")
         extraction_result = {
-            "core_fault_phenomenon": ["无"],
+            "core_fault_phenomenon": ["基于检索内容无法提取具体故障现象"],
             "key_part_info": ["无"],
             "time_series": ["无"],
             "critical_env_params": ["无"],
-            "maintenance_key_points": ["无"]
+            "maintenance_key_points": ["基于检索内容无法提取历史维护要点"]
         }
     state["extraction_result"] = extraction_result
     if response is not None:
@@ -322,13 +349,36 @@ def fault_analysis_node(state: State) -> State:
         }}
         注意：置信度应为 0-100 之间的整数。
     """
+    response = None
     try:
         response = _llm.invoke([SystemMessage(content=fault_prompt)])
-        fault_analysis_result = json.loads(clean_json_output(response.content))
-    except Exception:
+        print(f"📊 [故障分析节点] LLM 返回: {response.content[:500]}...")
+        json_data = clean_json_output(response.content)
+        print(f"📊 [故障分析节点] 清理后 JSON: {json_data[:500]}...")
+        fault_analysis_result = json.loads(json_data)
+        print(f"✅ [故障分析节点] 解析成功: {list(fault_analysis_result.keys())}")
+        
+        # 验证必要字段存在
+        if not fault_analysis_result.get('potential_causes'):
+            fault_analysis_result['potential_causes'] = [
+                {"原因": f"{defect_input.get('defect_type')}可能原因待分析", "置信度": 50, "关联依据": "需要更多数据"}
+            ]
+        if not fault_analysis_result.get('risk_assessment'):
+            fault_analysis_result['risk_assessment'] = [
+                {"risk_level": "中", "expected_fault_time": "待评估", "impact_scope": "待评估"}
+            ]
+            
+    except Exception as e:
+        print(f"❌ [故障分析节点] 处理失败: {e}")
+        if response:
+            print(f"❌ [故障分析节点] 原始返回: {response.content[:500]}...")
         fault_analysis_result = {
-            "potential_causes": [{"原因": defect_input.get('defect_type'), "置信度": 50, "关联依据": "基于通用部件特性分析"}],
-            "risk_assessment": [{"risk_level": "中", "expected_fault_time": "未来7天内", "impact_scope": "局部设备异常"}]
+            "potential_causes": [
+                {"原因": f"{defect_input.get('defect_type')}（自动生成）", "置信度": 50, "关联依据": "基于通用部件特性分析，详细原因需人工判断"}
+            ],
+            "risk_assessment": [
+                {"risk_level": "中", "expected_fault_time": "未来7天内", "impact_scope": "局部设备可能受影响"}
+            ]
         }
     state["fault_analysis_result"] = fault_analysis_result
     return state
@@ -412,6 +462,17 @@ def generate_final_report(state: State) -> str:
     fault_analysis_result = state.get("fault_analysis_result", {})
     maintenance_plan_result = state.get("maintenance_plan_result", {})
     retry_count = state.get("retry_count", 1) - 1
+    
+    # 调试日志
+    print(f"\n{'='*60}")
+    print(f"📝 [报告生成] 开始生成最终报告")
+    print(f"📝 [报告生成] extraction_result keys: {list(extraction_result.keys())}")
+    print(f"📝 [报告生成] core_fault_phenomenon: {extraction_result.get('core_fault_phenomenon', [])}")
+    print(f"📝 [报告生成] maintenance_key_points: {extraction_result.get('maintenance_key_points', [])}")
+    print(f"📝 [报告生成] fault_analysis_result keys: {list(fault_analysis_result.keys())}")
+    print(f"📝 [报告生成] potential_causes: {fault_analysis_result.get('potential_causes', [])}")
+    print(f"📝 [报告生成] risk_assessment: {fault_analysis_result.get('risk_assessment', [])}")
+    print(f"{'='*60}\n")
 
     report = f"""# 轨道巡检故障分析报告
 
@@ -430,19 +491,39 @@ def generate_final_report(state: State) -> str:
 
 ### 2.1 核心故障现象
 """
-    for i, phen in enumerate(extraction_result.get('core_fault_phenomenon', ['无']), 1):
-        if phen and phen != '无':
-            report += f"{i}. {phen}\n"
+    core_phenomena = extraction_result.get('core_fault_phenomenon', [])
+    if not core_phenomena or core_phenomena == ['无']:
+        report += "暂无数据\n"
+    else:
+        for i, phen in enumerate(core_phenomena, 1):
+            if phen and phen != '无':
+                report += f"{i}. {phen}\n"
+    
     report += "\n### 2.2 历史维护要点\n"
-    for i, point in enumerate(extraction_result.get('maintenance_key_points', ['无']), 1):
-        if point and point != '无':
-            report += f"{i}. {point}\n"
+    maintenance_points = extraction_result.get('maintenance_key_points', [])
+    if not maintenance_points or maintenance_points == ['无']:
+        report += "暂无数据\n"
+    else:
+        for i, point in enumerate(maintenance_points, 1):
+            if point and point != '无':
+                report += f"{i}. {point}\n"
+    
     report += "\n## 三、故障分析与风险评估\n\n### 3.1 潜在故障原因\n"
-    for i, cause in enumerate(fault_analysis_result.get('potential_causes', []), 1):
-        report += f"\n#### 原因{i}\n- 具体原因：{cause.get('原因', '未知')}\n- 置信度：{format_confidence(cause.get('置信度', 0))}\n- 关联依据：{cause.get('关联依据', '无')}\n"
+    potential_causes = fault_analysis_result.get('potential_causes', [])
+    if not potential_causes:
+        report += "暂无数据\n"
+    else:
+        for i, cause in enumerate(potential_causes, 1):
+            report += f"\n#### 原因{i}\n- 具体原因：{cause.get('原因', '未知')}\n- 置信度：{format_confidence(cause.get('置信度', 0))}\n- 关联依据：{cause.get('关联依据', '无')}\n"
+    
     report += "\n### 3.2 风险评估\n"
-    for risk in fault_analysis_result.get('risk_assessment', []):
-        report += f"\n| {risk.get('risk_level', '未知')} | {risk.get('expected_fault_time', '未知')} | {risk.get('impact_scope', '未知')} |\n"
+    risk_assessment = fault_analysis_result.get('risk_assessment', [])
+    if not risk_assessment:
+        report += "暂无数据\n"
+    else:
+        report += "\n| 风险等级 | 预计故障时间 | 影响范围 |\n|----------|--------------|----------|\n"
+        for risk in risk_assessment:
+            report += f"| {risk.get('risk_level', '未知')} | {risk.get('expected_fault_time', '未知')} | {risk.get('impact_scope', '未知')} |\n"
     report += f"""
 ## 四、维护方案建议
 

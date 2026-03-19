@@ -362,7 +362,7 @@
         </div>
 
         <!-- 最终分析报告 -->
-        <div v-if="analysisResult?.final_report" class="bg-white rounded-2xl shadow-lg border border-slate-200/60 overflow-hidden">
+        <div v-if="analysisReportContent" class="bg-white rounded-2xl shadow-lg border border-slate-200/60 overflow-hidden">
           <div class="px-6 py-4 bg-gradient-to-r from-slate-50 to-blue-50 border-b border-slate-200">
             <h4 class="text-sm font-bold text-slate-700 uppercase tracking-wide flex items-center gap-2">
               <SparklesIcon class="w-4 h-4 text-blue-500"/>
@@ -370,7 +370,7 @@
             </h4>
           </div>
           <div class="p-6">
-            <div class="prose prose-slate max-w-none" v-html="renderMarkdown(analysisResult.final_report)"></div>
+            <div class="prose prose-slate max-w-none" v-html="renderMarkdown(analysisReportContent)"></div>
           </div>
         </div>
 
@@ -597,6 +597,13 @@ const canSwitchView = computed(() => {
 
 // 是否有分析结果
 const hasAnalysisResult = computed(() => !!props.analysisResult)
+
+// 获取分析报告内容（兼容多种字段名）
+const analysisReportContent = computed(() => {
+  if (!props.analysisResult) return ''
+  // 优先使用 final_report，其次是 report_markdown
+  return props.analysisResult.final_report || props.analysisResult.report_markdown || ''
+})
 
 // 表单验证
 const isFormValid = computed(() => {
@@ -895,6 +902,7 @@ defineExpose({
   resetForm,
   setSubmitting: (value) => { isSubmitting.value = value },
   showFormView: () => { currentView.value = 'form' },
+  showAnalyzingView: () => { currentView.value = 'analyzing' },
   showResultView: () => { currentView.value = 'result' },
   startAnalyzing,
   addAnalysisStep,

@@ -43,6 +43,7 @@
           :api-base-url="apiBaseUrl"
           @show-form="handleShowForm"
           @show-result="handleShowResult"
+          @show-analyzing="handleShowAnalyzing"
           @hide-canvas="handleHideCanvas"
           @analysis-start="handleAnalysisStart"
           @analysis-step="handleAnalysisStep"
@@ -138,6 +139,17 @@ const handleShowResult = (result) => {
   showCanvas.value = true
 }
 
+// 显示分析流程（不重置步骤，仅切换视图）
+const handleShowAnalyzing = () => {
+  canvasMode.value = 'analyzing'
+  showCanvas.value = true
+  nextTick(() => {
+    if (canvasRef.value && canvasRef.value.showAnalyzingView) {
+      canvasRef.value.showAnalyzingView()
+    }
+  })
+}
+
 // 隐藏 Canvas
 const handleHideCanvas = () => {
   showCanvas.value = false
@@ -198,11 +210,15 @@ const handleAnalysisComplete = (data) => {
   analysisResult.value = data
   canvasMode.value = 'result'
   
+  // 自动展开 Canvas 显示报告
+  showCanvas.value = true
+  
   // 使用 nextTick 确保状态更新后调用方法
   nextTick(() => {
     if (canvasRef.value && canvasRef.value.completeAnalysis) {
       canvasRef.value.completeAnalysis(data)
-      console.log('📢 已调用 Canvas.completeAnalysis()')
+      canvasRef.value.showResultView()  // 确保切换到结果视图
+      console.log('📢 已调用 Canvas.completeAnalysis() 和 showResultView()')
     }
   })
 }

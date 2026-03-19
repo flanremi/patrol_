@@ -4,20 +4,24 @@
 巡检智能体 WebSocket 后端服务
 提供 WebSocket 接口与前端通信
 消息类型：system、chat、tool
+支持会话历史记录（生命周期：WebSocket 连接建立到断开）
 """
 import asyncio
 import json
 import os
 import sys
 import uuid
+import concurrent.futures
 from datetime import datetime
-from typing import Dict, Any, Optional, Set
+from typing import Dict, Any, Optional, Set, List
 from contextlib import asynccontextmanager
+from functools import partial
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+from langchain_core.messages import HumanMessage, AIMessage
 
 # 从 backend 所在目录加载 .env，保证无论从哪启动都能读到 RAG_MODE 等配置
 _env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
@@ -25,6 +29,191 @@ load_dotenv(_env_path)
 
 # 导入巡检智能体（其内部会按 rag_config.RAG_MODE 决定是否连接 Neo4j）
 from inspection_agent import InspectionAgent, InspectionInput
+
+
+# ===================== 会话历史管理 =====================
+class SessionHistory:
+    """会话历史记录 - 每个 WebSocket 连接独立维护"""
+    
+    def __init__(self, connection_id: str):
+        self.connection_id = connection_id
+        self.messages: List[Dict[str, Any]] = []  # 存储消息历史
+        self.created_at = datetime.now()
+        self.last_activity = datetime.now()
+    
+    def add_user_message(self, content: str):
+        """添加用户消息"""
+        self.messages.append({
+            "role": "user",
+            "content": content,
+            "timestamp": datetime.now().isoformat()
+        })
+        self.last_activity = datetime.now()
+        print(f"📝 [会话 {self.connection_id}] 添加用户消息，当前消息数: {len(self.messages)}")
+    
+    def add_ai_message(self, content: str):
+        """添加 AI 消息"""
+        self.messages.append({
+            "role": "assistant",
+            "content": content,
+            "timestamp": datetime.now().isoformat()
+        })
+        self.last_activity = datetime.now()
+        print(f"📝 [会话 {self.connection_id}] 添加 AI 消息，当前消息数: {len(self.messages)}")
+    
+    def add_system_message(self, content: str):
+        """添加系统消息"""
+        self.messages.append({
+            "role": "system",
+            "content": content,
+            "timestamp": datetime.now().isoformat()
+        })
+        self.last_activity = datetime.now()
+    
+    def get_langchain_messages(self) -> List:
+        """转换为 LangChain 消息格式"""
+        lc_messages = []
+        for msg in self.messages:
+            if msg["role"] == "user":
+                lc_messages.append(HumanMessage(content=msg["content"]))
+            elif msg["role"] == "assistant":
+                lc_messages.append(AIMessage(content=msg["content"]))
+        return lc_messages
+    
+    def get_message_count(self) -> int:
+        """获取消息数量"""
+        return len(self.messages)
+    
+    def clear(self):
+        """清空历史"""
+        self.messages = []
+        print(f"🗑️ [会话 {self.connection_id}] 历史已清空")
+    
+    def add_analysis_report(self, task_id: str, report_summary: str):
+        """添加分析报告摘要到历史（作为系统消息供 LLM 参考）"""
+        self.messages.append({
+            "role": "assistant",
+            "content": f"[故障分析报告 {task_id}]\n{report_summary}",
+            "timestamp": datetime.now().isoformat(),
+            "type": "analysis_report",
+            "task_id": task_id
+        })
+        self.last_activity = datetime.now()
+        print(f"📊 [会话 {self.connection_id}] 添加分析报告到历史，task_id: {task_id}")
+
+
+# ===================== 分析任务管理 =====================
+class AnalysisTask:
+    """分析任务 - 存储分析状态和结果"""
+    
+    def __init__(self, task_id: str, connection_id: str, input_data: Dict[str, Any]):
+        self.task_id = task_id
+        self.connection_id = connection_id
+        self.input_data = input_data  # 工单输入数据
+        self.status = "pending"  # pending | running | completed | error
+        self.created_at = datetime.now()
+        self.updated_at = datetime.now()
+        self.steps: List[Dict[str, Any]] = []  # 分析步骤
+        self.final_report: Optional[str] = None  # 最终报告（Markdown）
+        self.thinking_processes: List[Dict[str, Any]] = []  # 思考过程
+        self.error: Optional[str] = None
+        self.retry_count: int = 0
+    
+    def start(self):
+        """开始分析"""
+        self.status = "running"
+        self.updated_at = datetime.now()
+    
+    def add_step(self, step: Dict[str, Any]):
+        """添加分析步骤"""
+        self.steps.append({
+            **step,
+            "timestamp": datetime.now().isoformat()
+        })
+        self.updated_at = datetime.now()
+    
+    def complete(self, final_report: str, thinking_processes: List[Dict[str, Any]] = None):
+        """完成分析"""
+        self.status = "completed"
+        self.final_report = final_report
+        self.thinking_processes = thinking_processes or []
+        self.updated_at = datetime.now()
+    
+    def fail(self, error: str):
+        """分析失败"""
+        self.status = "error"
+        self.error = error
+        self.updated_at = datetime.now()
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """转换为字典"""
+        return {
+            "task_id": self.task_id,
+            "connection_id": self.connection_id,
+            "input_data": self.input_data,
+            "status": self.status,
+            "created_at": self.created_at.isoformat(),
+            "updated_at": self.updated_at.isoformat(),
+            "steps": self.steps,
+            "final_report": self.final_report,
+            "thinking_processes": self.thinking_processes,
+            "error": self.error,
+            "retry_count": self.retry_count
+        }
+    
+    def get_report_summary(self, max_length: int = 500) -> str:
+        """获取报告摘要（用于加入对话历史）"""
+        if not self.final_report:
+            return f"分析任务 {self.task_id} 尚未完成"
+        
+        # 提取报告的关键部分作为摘要
+        summary_parts = []
+        summary_parts.append(f"部件: {self.input_data.get('part_name', '未知')}")
+        summary_parts.append(f"缺陷: {self.input_data.get('defect_type', '未知')}")
+        summary_parts.append(f"位置: {self.input_data.get('part_position', '未知')}")
+        
+        # 截取报告内容
+        report_preview = self.final_report[:max_length]
+        if len(self.final_report) > max_length:
+            report_preview += "...(报告已截断)"
+        
+        return f"基本信息: {', '.join(summary_parts)}\n报告摘要:\n{report_preview}"
+
+
+class AnalysisTaskManager:
+    """分析任务管理器 - 全局单例"""
+    
+    def __init__(self):
+        self.tasks: Dict[str, AnalysisTask] = {}
+        self._lock = asyncio.Lock()
+    
+    def create_task(self, connection_id: str, input_data: Dict[str, Any]) -> AnalysisTask:
+        """创建新的分析任务"""
+        task_id = str(uuid.uuid4())[:8]
+        task = AnalysisTask(task_id, connection_id, input_data)
+        self.tasks[task_id] = task
+        print(f"📋 [任务管理] 创建分析任务: {task_id}, 输入: {input_data.get('part_name', '')} - {input_data.get('defect_type', '')}")
+        return task
+    
+    def get_task(self, task_id: str) -> Optional[AnalysisTask]:
+        """获取任务"""
+        return self.tasks.get(task_id)
+    
+    def get_tasks_by_connection(self, connection_id: str) -> List[AnalysisTask]:
+        """获取连接的所有任务"""
+        return [t for t in self.tasks.values() if t.connection_id == connection_id]
+    
+    def cleanup_connection(self, connection_id: str):
+        """清理连接的任务（可选：保留已完成的）"""
+        to_remove = [tid for tid, t in self.tasks.items() 
+                     if t.connection_id == connection_id and t.status != "completed"]
+        for tid in to_remove:
+            del self.tasks[tid]
+        print(f"🗑️ [任务管理] 清理连接 {connection_id} 的未完成任务: {len(to_remove)} 个")
+
+
+# 全局分析任务管理器
+analysis_task_manager = AnalysisTaskManager()
 
 
 # ===================== WebSocket 消息协议 =====================
@@ -46,14 +235,15 @@ class WSMessage(BaseModel):
 
 # ===================== 连接管理器 =====================
 class ConnectionManager:
-    """WebSocket 连接管理器"""
+    """WebSocket 连接管理器 - 支持会话历史"""
 
     def __init__(self):
         self.active_connections: Set[WebSocket] = set()
         self.connection_info: Dict[WebSocket, Dict] = {}
+        self.session_histories: Dict[WebSocket, SessionHistory] = {}  # 会话历史
 
     async def connect(self, websocket: WebSocket) -> str:
-        """接受连接"""
+        """接受连接并创建会话历史"""
         await websocket.accept()
         self.active_connections.add(websocket)
         connection_id = str(uuid.uuid4())[:8]
@@ -61,16 +251,34 @@ class ConnectionManager:
             "id": connection_id,
             "connected_at": datetime.now().isoformat()
         }
-        print(f"✅ 新连接: {connection_id}")
+        # 创建会话历史
+        self.session_histories[websocket] = SessionHistory(connection_id)
+        print(f"✅ 新连接: {connection_id}，已创建会话历史")
         return connection_id
 
     def disconnect(self, websocket: WebSocket):
-        """断开连接"""
+        """断开连接并清理会话历史和分析任务"""
         if websocket in self.active_connections:
             conn_id = self.connection_info.get(websocket, {}).get("id", "unknown")
+            history = self.session_histories.get(websocket)
+            msg_count = history.get_message_count() if history else 0
+            
             self.active_connections.discard(websocket)
             self.connection_info.pop(websocket, None)
-            print(f"❌ 断开连接: {conn_id}")
+            self.session_histories.pop(websocket, None)  # 清理会话历史
+            
+            # 清理该连接的分析任务（可选保留已完成的）
+            analysis_task_manager.cleanup_connection(conn_id)
+            
+            print(f"❌ 断开连接: {conn_id}，会话历史已清理（共 {msg_count} 条消息）")
+
+    def get_session_history(self, websocket: WebSocket) -> Optional[SessionHistory]:
+        """获取会话历史"""
+        return self.session_histories.get(websocket)
+    
+    def get_connection_id(self, websocket: WebSocket) -> str:
+        """获取连接 ID"""
+        return self.connection_info.get(websocket, {}).get("id", "unknown")
 
     async def send_message(self, websocket: WebSocket, message: WSMessage):
         """发送消息到指定连接"""
@@ -325,7 +533,7 @@ async def handle_system_message(websocket: WebSocket, action: str, payload: Dict
 
 
 async def handle_chat_message(websocket: WebSocket, action: str, payload: Dict):
-    """处理聊天消息"""
+    """处理聊天消息 - 非阻塞模式，支持并发对话"""
     if action == "send":
         message = payload.get("message", "")
         if not message:
@@ -344,41 +552,41 @@ async def handle_chat_message(websocket: WebSocket, action: str, payload: Dict):
             ))
             return
 
+        # 获取会话历史
+        session_history = manager.get_session_history(websocket)
+        if session_history:
+            session_history.add_user_message(message)
+
+        # 生成消息 ID 用于追踪
+        message_id = str(uuid.uuid4())[:8]
+
         # 开始处理
         await manager.send_message(websocket, WSMessage(
             type="chat",
             action="start",
-            data={"message": "开始处理消息..."}
+            data={"message": "开始处理消息...", "message_id": message_id}
         ))
 
-        try:
-            # 创建回调函数用于流式输出
-            async def send_callback(msg_type: str, action: str, data: dict):
-                await manager.send_message(websocket, WSMessage(
-                    type=msg_type,
-                    action=action,
-                    data=data
-                ))
+        # 创建后台任务处理聊天（非阻塞）
+        print(f"🚀 [主循环] 创建后台任务 [{message_id}]: {message[:30]}...")
+        asyncio.create_task(_process_chat_in_background(
+            websocket, message, message_id, session_history
+        ))
+        
+        # 立即返回，允许接收下一条消息
+        print(f"✅ [主循环] 已返回，可接收下一条消息")
+        return
 
-            # 调用智能体处理消息
-            await inspection_agent.process_message(message, send_callback)
-
-            # 发送完成消息
-            await manager.send_message(websocket, WSMessage(
-                type="chat",
-                action="complete",
-                data={"message": "处理完成"}
-            ))
-
-        except Exception as e:
-            print(f"❌ 处理消息失败: {e}")
-            import traceback
-            traceback.print_exc()
-            await manager.send_message(websocket, WSMessage(
-                type="chat",
-                action="error",
-                data={"error": str(e)}
-            ))
+    elif action == "clear_history":
+        # 清空会话历史
+        session_history = manager.get_session_history(websocket)
+        if session_history:
+            session_history.clear()
+        await manager.send_message(websocket, WSMessage(
+            type="system",
+            action="history_cleared",
+            data={"message": "会话历史已清空"}
+        ))
     else:
         await manager.send_message(websocket, WSMessage(
             type="system",
@@ -387,8 +595,299 @@ async def handle_chat_message(websocket: WebSocket, action: str, payload: Dict):
         ))
 
 
+# 全局线程池执行器 - 用于并发处理多个聊天请求
+_chat_executor = concurrent.futures.ThreadPoolExecutor(max_workers=10, thread_name_prefix="chat_worker")
+
+
+def _sync_send_callback_wrapper(websocket: WebSocket, message_id: str, main_loop: asyncio.AbstractEventLoop):
+    """创建一个同步可调用的回调包装器，用于在工作线程中调度消息发送到主事件循环"""
+    ai_response_content = []
+    
+    async def async_send(msg_type: str, action: str, data: dict):
+        # 收集 AI 消息内容
+        if msg_type == "chat" and action == "message" and data.get("type") == "ai":
+            content = data.get("content", "")
+            if content:
+                ai_response_content.append(content)
+        
+        # 附加 message_id
+        data_with_id = {**data, "message_id": message_id}
+        await manager.send_message(websocket, WSMessage(
+            type=msg_type,
+            action=action,
+            data=data_with_id
+        ))
+    
+    def sync_send(msg_type: str, action: str, data: dict):
+        """同步调用，将异步发送调度到主事件循环"""
+        if main_loop and main_loop.is_running():
+            future = asyncio.run_coroutine_threadsafe(
+                async_send(msg_type, action, data),
+                main_loop
+            )
+            try:
+                future.result(timeout=30)
+            except Exception as e:
+                print(f"⚠️ 发送消息失败: {e}")
+    
+    return sync_send, ai_response_content
+
+
+def _run_agent_in_thread(
+    message: str,
+    history_messages: List,
+    sync_callback,
+    message_id: str
+):
+    """在独立线程中运行智能体（真正的并发）"""
+    import asyncio
+    import threading
+    
+    print(f"🧵 [线程 {threading.current_thread().name}] 开始处理消息 [{message_id}]")
+    
+    # 为这个线程创建新的事件循环
+    thread_loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(thread_loop)
+    
+    try:
+        # 创建独立的 InspectionAgent 实例（避免共享状态）
+        print(f"🧵 [线程 {message_id}] 创建 InspectionAgent 实例...")
+        thread_agent = InspectionAgent()
+        print(f"🧵 [线程 {message_id}] InspectionAgent 创建完成")
+        
+        # 创建异步回调包装器
+        async def async_callback(msg_type: str, action: str, data: dict):
+            sync_callback(msg_type, action, data)
+        
+        # 运行处理
+        thread_loop.run_until_complete(
+            thread_agent.process_message_with_history(message, history_messages, async_callback)
+        )
+        return True
+    except Exception as e:
+        print(f"❌ 线程处理失败 [{message_id}]: {e}")
+        import traceback
+        traceback.print_exc()
+        sync_callback("chat", "error", {"error": str(e)})
+        return False
+    finally:
+        thread_loop.close()
+
+
+async def _process_chat_in_background(
+    websocket: WebSocket, 
+    message: str, 
+    message_id: str,
+    session_history: Optional[SessionHistory]
+):
+    """后台处理聊天消息 - 使用线程池实现真正的并发"""
+    print(f"🔧 [后台任务 {message_id}] 开始执行")
+    main_loop = asyncio.get_running_loop()
+    
+    try:
+        # 创建同步回调包装器
+        sync_callback, ai_response_content = _sync_send_callback_wrapper(websocket, message_id, main_loop)
+        
+        # 获取历史消息
+        history_messages = session_history.get_langchain_messages() if session_history else []
+        
+        print(f"🔧 [后台任务 {message_id}] 提交到线程池...")
+        # 在线程池中运行智能体（不阻塞主事件循环）
+        success = await main_loop.run_in_executor(
+            _chat_executor,
+            partial(_run_agent_in_thread, message, history_messages, sync_callback, message_id)
+        )
+        print(f"🔧 [后台任务 {message_id}] 线程执行完成, success={success}")
+
+        # 保存 AI 回复到历史
+        if session_history and ai_response_content:
+            full_response = "\n".join(ai_response_content)
+            session_history.add_ai_message(full_response)
+
+        # 发送完成消息
+        await manager.send_message(websocket, WSMessage(
+            type="chat",
+            action="complete",
+            data={"message": "处理完成", "message_id": message_id}
+        ))
+
+    except Exception as e:
+        print(f"❌ 后台处理消息失败 [{message_id}]: {e}")
+        import traceback
+        traceback.print_exc()
+        await manager.send_message(websocket, WSMessage(
+            type="chat",
+            action="error",
+            data={"error": str(e), "message_id": message_id}
+        ))
+
+
+def _create_thread_safe_callback(websocket: WebSocket, task: AnalysisTask, main_loop: asyncio.AbstractEventLoop):
+    """创建线程安全的回调函数，用于在工作线程中发送消息到主事件循环"""
+    
+    def sync_callback(msg_type: str, action: str, data: dict):
+        """同步回调 - 在工作线程中调用"""
+        print(f"📤 [回调 {task.task_id}] type={msg_type}, action={action}, data_keys={list(data.keys())}")
+        
+        # 附加 task_id 到所有消息
+        data_with_task = {**data, "task_id": task.task_id}
+        
+        # 记录分析步骤
+        if action in ("thinking_step", "node_start", "node_complete"):
+            task.add_step({"action": action, **data})
+        
+        # 记录最终报告 - 处理多种字段名
+        # fault_analysis_core_vector 使用 report_markdown
+        # 其他地方可能使用 final_report
+        if action == "final_report":
+            final_report = data.get("report_markdown") or data.get("final_report", "")
+            thinking_processes = data.get("thinking_processes", [])
+            
+            print(f"📊 [回调 {task.task_id}] 收到最终报告, 长度={len(final_report)}")
+            
+            if final_report:
+                task.complete(final_report, thinking_processes)
+                
+                # 标准化输出字段名，确保前端能正确读取
+                data_with_task["final_report"] = final_report
+                data_with_task["report_markdown"] = final_report  # 保留兼容
+                
+                # 获取会话历史并添加报告
+                session_history = manager.get_session_history(websocket)
+                if session_history:
+                    task_summary = task.get_report_summary()
+                    session_history.add_analysis_report(task.task_id, task_summary)
+        
+        if action == "analysis_complete":
+            # analysis_complete 可能在 final_report 之后发送
+            # 如果任务还未完成，尝试从 data 中获取报告
+            if task.status != "completed":
+                final_report = data.get("report_markdown") or data.get("final_report", "")
+                if final_report:
+                    task.complete(final_report, data.get("thinking_processes", []))
+                    data_with_task["final_report"] = final_report
+        
+        # 记录错误
+        if action == "analysis_error" or action == "error":
+            task.fail(data.get("error", "未知错误"))
+        
+        # 调度消息发送到主事件循环
+        if main_loop and main_loop.is_running():
+            async def send_msg():
+                await manager.send_message(websocket, WSMessage(type=msg_type, action=action, data=data_with_task))
+            
+            future = asyncio.run_coroutine_threadsafe(send_msg(), main_loop)
+            try:
+                future.result(timeout=30)
+            except Exception as e:
+                print(f"⚠️ [分析回调] 发送消息失败: {e}")
+        else:
+            print(f"⚠️ [分析回调] 主事件循环未运行，无法发送消息")
+    
+    return sync_callback
+
+
+def _run_analysis_in_thread(
+    task: AnalysisTask,
+    rag_mode: str,
+    input_data: Dict[str, Any],
+    sync_callback
+):
+    """在独立线程中执行分析（真正的并发）"""
+    import threading
+    
+    print(f"🧵 [线程 {threading.current_thread().name}] 开始分析任务 [{task.task_id}]")
+    
+    detect_time = input_data["detect_time"]
+    part_name = input_data["part_name"]
+    part_position = input_data["part_position"]
+    defect_type = input_data["defect_type"]
+    detect_confidence = input_data["detect_confidence"]
+    
+    # 为这个线程创建新的事件循环
+    thread_loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(thread_loop)
+    
+    try:
+        # 创建异步回调包装器
+        async def async_callback(msg_type: str, action: str, data: dict):
+            sync_callback(msg_type, action, data)
+        
+        # 发送开始消息
+        sync_callback("chat", "start", {"message": f"正在分析故障工单信息（{rag_mode} 模式）..."})
+        
+        if rag_mode == "vector":
+            from fault_analysis_core_vector import initialize, run_fault_analysis_async
+            if not initialize():
+                sync_callback("tool", "analysis_error", {
+                    "error": "故障分析模块初始化失败", 
+                    "message": "请检查向量数据库与 LLM 配置"
+                })
+                return False
+            
+            # 在线程事件循环中运行异步分析
+            thread_loop.run_until_complete(run_fault_analysis_async(
+                detect_time=detect_time,
+                part_name=part_name,
+                part_position=part_position,
+                defect_type=defect_type,
+                detect_confidence=detect_confidence,
+                ws_callback=async_callback,
+            ))
+        else:
+            # graph 模式 - 创建独立的 InspectionAgent
+            thread_agent = InspectionAgent()
+            inspection_input = InspectionInput(
+                detect_time=detect_time,
+                part_name=part_name,
+                part_position=part_position,
+                defect_type=defect_type,
+                detect_confidence=detect_confidence,
+            )
+            thread_loop.run_until_complete(
+                thread_agent.run_fault_analysis(inspection_input, async_callback)
+            )
+        
+        # 发送完成消息
+        sync_callback("chat", "complete", {"message": "故障分析完成"})
+        print(f"✅ [线程 {task.task_id}] 分析完成")
+        return True
+        
+    except Exception as e:
+        print(f"❌ [线程 {task.task_id}] 分析失败: {e}")
+        import traceback
+        traceback.print_exc()
+        task.fail(str(e))
+        sync_callback("chat", "error", {"error": str(e)})
+        return False
+    finally:
+        thread_loop.close()
+
+
+async def _run_analysis_in_background(
+    websocket: WebSocket,
+    task: AnalysisTask,
+    rag_mode: str,
+    input_data: Dict[str, Any]
+):
+    """后台执行分析任务 - 使用线程池实现真正的非阻塞"""
+    print(f"🔧 [后台分析 {task.task_id}] 提交到线程池")
+    main_loop = asyncio.get_running_loop()
+    
+    # 创建线程安全的回调
+    sync_callback = _create_thread_safe_callback(websocket, task, main_loop)
+    
+    # 在线程池中运行分析（不阻塞主事件循环）
+    await main_loop.run_in_executor(
+        _chat_executor,
+        partial(_run_analysis_in_thread, task, rag_mode, input_data, sync_callback)
+    )
+    
+    print(f"🔧 [后台分析 {task.task_id}] 执行完成")
+
+
 async def handle_tool_message(websocket: WebSocket, action: str, payload: Dict):
-    """处理工具消息"""
+    """处理工具消息 - 非阻塞模式"""
     if action == "form_submit":
         form_data = payload.get("form_data", {})
         if not form_data:
@@ -406,98 +905,72 @@ async def handle_tool_message(websocket: WebSocket, action: str, payload: Dict):
         defect_type = form_data.get("defect_type", "")
         detect_confidence = float(form_data.get("detect_confidence", 0.95))
 
-        async def send_callback(msg_type: str, action: str, data: dict):
-            await manager.send_message(websocket, WSMessage(type=msg_type, action=action, data=data))
+        # 获取连接 ID
+        connection_id = manager.get_connection_id(websocket)
+        
+        # 创建分析任务
+        input_data = {
+            "detect_time": detect_time,
+            "part_name": part_name,
+            "part_position": part_position,
+            "defect_type": defect_type,
+            "detect_confidence": detect_confidence,
+        }
+        task = analysis_task_manager.create_task(connection_id, input_data)
+        task.start()
 
-        # vector 模式：独立逻辑，直接走 fault_analysis_core_vector，不经过 inspection_agent
-        if rag_mode == "vector":
-            try:
-                await manager.send_message(websocket, WSMessage(
-                    type="chat",
-                    action="start",
-                    data={"message": "正在分析故障工单信息（向量 RAG）..."}
-                ))
-                from fault_analysis_core_vector import initialize, run_fault_analysis_async
-                if not initialize():
-                    await manager.send_message(websocket, WSMessage(
-                        type="tool",
-                        action="analysis_error",
-                        data={"error": "故障分析模块初始化失败", "message": "请检查向量数据库与 LLM 配置"}
-                    ))
-                    return
-                result = await run_fault_analysis_async(
-                    detect_time=detect_time,
-                    part_name=part_name,
-                    part_position=part_position,
-                    defect_type=defect_type,
-                    detect_confidence=detect_confidence,
-                    ws_callback=send_callback,
-                )
-                await send_callback("tool", "analysis_complete", {
-                    "final_report": result.final_report,
-                    "retry_count": result.retry_count,
-                    "thinking_processes": result.thinking_processes,
-                    "input": {
-                        "part_name": part_name,
-                        "defect_type": defect_type,
-                        "part_position": part_position,
-                        "detect_time": detect_time,
-                        "detect_confidence": detect_confidence,
-                    },
-                    "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                })
-                await manager.send_message(websocket, WSMessage(
-                    type="chat",
-                    action="complete",
-                    data={"message": "故障分析完成"}
-                ))
-            except Exception as e:
-                print(f"❌ 向量模式故障分析失败: {e}")
-                import traceback
-                traceback.print_exc()
-                await manager.send_message(websocket, WSMessage(
-                    type="chat",
-                    action="error",
-                    data={"error": str(e)}
-                ))
-            return
+        # 通知前端分析任务已创建（带 task_id）- 立即响应
+        await manager.send_message(websocket, WSMessage(
+            type="tool",
+            action="task_created",
+            data={
+                "task_id": task.task_id,
+                "input_data": input_data,
+                "status": "running",
+                "message": f"分析任务 {task.task_id} 已创建"
+            }
+        ))
 
-        # graph 模式：经 inspection_agent，使用知识图谱+向量
-        if inspection_agent is None:
+        # 创建后台任务执行分析（非阻塞）
+        print(f"🚀 [主循环] 创建分析任务 [{task.task_id}]: {part_name} - {defect_type}")
+        asyncio.create_task(_run_analysis_in_background(
+            websocket, task, rag_mode, input_data
+        ))
+        
+        # 立即返回，允许接收下一条消息
+        print(f"✅ [主循环] 分析任务已提交后台，可接收下一条消息")
+        return
+    
+    elif action == "get_task":
+        # 获取任务详情
+        task_id = payload.get("task_id", "")
+        task = analysis_task_manager.get_task(task_id)
+        if task:
+            await manager.send_message(websocket, WSMessage(
+                type="tool",
+                action="task_detail",
+                data=task.to_dict()
+            ))
+        else:
             await manager.send_message(websocket, WSMessage(
                 type="system",
                 action="error",
-                data={"error": "智能体未初始化"}
+                data={"error": f"任务不存在: {task_id}"}
             ))
-            return
+    
+    elif action == "list_tasks":
+        # 列出当前连接的所有任务
+        connection_id = manager.get_connection_id(websocket)
+        tasks = analysis_task_manager.get_tasks_by_connection(connection_id)
         await manager.send_message(websocket, WSMessage(
-            type="chat",
-            action="start",
-            data={"message": "正在分析故障工单信息..."}
+            type="tool",
+            action="task_list",
+            data={
+                "tasks": [t.to_dict() for t in tasks],
+                "count": len(tasks)
+            }
         ))
-        try:
-            inspection_input = InspectionInput(
-                detect_time=detect_time,
-                part_name=part_name,
-                part_position=part_position,
-                defect_type=defect_type,
-                detect_confidence=detect_confidence,
-            )
-            await inspection_agent.run_fault_analysis(inspection_input, send_callback)
-            await manager.send_message(websocket, WSMessage(
-                type="chat",
-                action="complete",
-                data={"message": "故障分析完成"}
-            ))
-        except Exception as e:
-            print(f"❌ 处理表单失败: {e}")
-            import traceback
-            traceback.print_exc()
-            await manager.send_message(websocket, WSMessage(
-                type="chat",
-                action="error",
-                data={"error": str(e)}
-            ))
+    
     else:
         await manager.send_message(websocket, WSMessage(
             type="system",
