@@ -139,10 +139,10 @@ base_url = os.getenv("OPENAI_BASE_URL")
 api_key = os.getenv("OPENAI_API_KEY")
 model_name = os.getenv("OPENAI_MODEL")
 llm = ChatOpenAI(
-    base_url=base_url,
-    api_key=api_key,
-    temperature=0,
-    model=model_name
+    base_url=base_url,  # Ollama API 地址
+    api_key=api_key,  # 任意字符串，Ollama 不需要真实密钥
+    model=model_name,  # Ollama 中的模型名称
+    temperature=0
 )
 
 embeddings = OllamaEmbeddings(

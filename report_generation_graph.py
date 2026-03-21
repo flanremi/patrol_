@@ -316,16 +316,18 @@ def create_report_generation_graph():
     Returns:
         编译后的langgraph子图
     """
-    base_url = os.getenv('OPENAI_BASE_URL')
-    api_key = "123"
+    base_url = os.getenv("OPENAI_BASE_URL")
+    api_key = os.getenv("OPENAI_API_KEY")
+    model_name = os.getenv("OPENAI_MODEL")
 
     if not api_key:
         raise ValueError("请设置OPENAI_API_KEY环境变量: report_generation_graph.py")
 
     # 创建LLM实例
     llm = ChatOpenAI(
-        base_url=base_url,
-        api_key=api_key,
+        base_url=base_url,  # Ollama API 地址
+        api_key=api_key,  # 任意字符串，Ollama 不需要真实密钥
+        model=model_name,  # Ollama 中的模型名称
         temperature=0.7,
         max_tokens=2000
     )
