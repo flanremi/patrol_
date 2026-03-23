@@ -55,6 +55,7 @@
           @courseware-generated="handleCoursewareGenerated"
           @agent-response="handleAgentResponse"
           @quality-check-result="handleQualityCheckResult"
+          @connection-status-change="handleConnectionStatusChange"
         />
 
         <!-- 隐藏右侧面板后，可再次展开 -->
@@ -120,7 +121,7 @@ useHead({
 })
 
 // 导入 Vue
-import { nextTick } from 'vue'
+import { nextTick, watch } from 'vue'
 
 // 导入组件
 import WorkflowLogo from '~/components/workflow/WorkflowLogo.vue'
@@ -374,9 +375,29 @@ const handleCoursewareGenerated = (courseware) => {
   })
 }
 
+// 处理连接状态变化
+const handleConnectionStatusChange = (status) => {
+  connectionStatus.value = status
+  console.log('🔌 连接状态变化:', status)
+}
+
 // 初始化
 onMounted(() => {
   // 初始状态：不展开 Canvas
   showCanvas.value = false
+  
+  // 检查初始连接状态
+  nextTick(() => {
+    if (chatRef.value && chatRef.value.wsConnected !== undefined) {
+      connectionStatus.value = chatRef.value.wsConnected ? 'connected' : 'disconnected'
+    }
+  })
+})
+
+// 监听子组件连接状态变化（作为备份机制）
+watch(() => chatRef.value?.wsConnected, (newVal) => {
+  if (newVal !== undefined) {
+    connectionStatus.value = newVal ? 'connected' : 'disconnected'
+  }
 })
 </script>

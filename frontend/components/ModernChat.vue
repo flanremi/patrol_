@@ -268,6 +268,7 @@ const emit = defineEmits([
   'courseware-generated',
   'agent-response',
   'quality-check-result',
+  'connection-status-change',
 ])
 
 // 注入聊天存储
@@ -396,17 +397,20 @@ const connectWebSocket = () => {
       wsConnected.value = true
       wsConnecting.value = false
       reconnectAttempts = 0
+      emit('connection-status-change', 'connected')
     }
 
     ws.onclose = (event) => {
       console.log(`❌ WebSocket 断开: code=${event.code}`)
       wsConnected.value = false
       wsConnecting.value = false
+      emit('connection-status-change', 'disconnected')
 
       // 自动重连
       if (reconnectAttempts < maxReconnectAttempts) {
         reconnectAttempts++
         console.log(`🔄 尝试重连 (${reconnectAttempts}/${maxReconnectAttempts})...`)
+        emit('connection-status-change', 'connecting')
         reconnectTimer = setTimeout(connectWebSocket, 3000)
       }
     }
@@ -414,6 +418,7 @@ const connectWebSocket = () => {
     ws.onerror = (error) => {
       console.error('WebSocket 错误:', error)
       wsConnecting.value = false
+      emit('connection-status-change', 'disconnected')
     }
 
     ws.onmessage = (event) => {
