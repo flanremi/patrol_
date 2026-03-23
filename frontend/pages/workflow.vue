@@ -113,7 +113,7 @@
 <script setup>
 // 页面元信息
 useHead({
-  title: '中车智能体平台',
+  title: '中车巡检智能体平台',
   meta: [
     { name: 'description', content: '轨道交通故障检测智能分析系统' },
   ],

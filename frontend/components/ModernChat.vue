@@ -1,12 +1,5 @@
 <template>
   <div class="modern-chat flex flex-col h-full bg-white relative overflow-hidden">
-    <!-- 背景装饰 - 柔和的几何形状 -->
-    <div class="absolute inset-0 pointer-events-none overflow-hidden">
-      <div class="absolute top-20 right-10 w-64 h-64 bg-blue-200/20 rounded-full blur-3xl"></div>
-      <div class="absolute bottom-32 left-10 w-80 h-80 bg-blue-300/20 rounded-full blur-3xl"></div>
-      <div class="absolute top-1/2 right-1/4 w-48 h-48 bg-blue-100/30 rounded-full blur-2xl"></div>
-    </div>
-
     <!-- 连接状态指示器 -->
     <div v-if="!wsConnected" class="absolute top-4 right-4 z-20">
       <div class="flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-semibold"
@@ -25,52 +18,10 @@
     >
       <!-- 欢迎界面 - 空状态 -->
       <div v-if="messages.length === 0"
-           class="max-w-[52rem] mx-auto px-8 text-center">
-        <div class="mb-16 relative">
-          <!-- 装饰小圆点 -->
-          <div class="absolute -top-4 left-1/2 -translate-x-12 w-2 h-2 bg-blue-500 rounded-full opacity-60"></div>
-          <div class="absolute -top-2 left-1/2 translate-x-16 w-1.5 h-1.5 bg-blue-400 rounded-full opacity-40"></div>
-
-          <div class="inline-flex items-center justify-center w-16 h-16 rounded-2xl  mb-6  relative">
-            <Logo class="w-20 h-20 "></Logo>
-          </div>
-
-          <h1 class="text-[32px] font-bold text-gray-900 mb-3 tracking-tight">
-            中车智能体平台
-          </h1>
-          <p class="text-[16px] text-gray-600 leading-relaxed max-w-md mx-auto">
-            智能故障检查与分析系统
-          </p>
-        </div>
-
-        <!-- 快捷建议卡片 -->
-        <div class="grid grid-cols-1 gap-3 max-w-[44rem] mx-auto">
-          <button
-            v-for="(suggestion, index) in suggestions"
-            :key="index"
-            @click="sendQuickMessage(suggestion.message)"
-            :disabled="!wsConnected || isSending"
-            class="group relative px-5 py-4 text-left rounded-2xl bg-white border-2 border-blue-200 shadow-sm hover:shadow-md hover:border-blue-500 transition-all duration-200 transform hover:-translate-y-0.5 disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            <div class="absolute top-2 right-2 w-1 h-1 bg-blue-300 rounded-full opacity-0 group-hover:opacity-100 transition-opacity"></div>
-
-            <div class="flex items-center gap-4">
-              <div class="flex-shrink-0 w-12 h-12 rounded-xl bg-blue-100 flex items-center justify-center text-2xl group-hover:bg-blue-200 transition-all duration-200 relative">
-                {{suggestion.icon}}
-                <div class="absolute -bottom-0.5 -right-0.5 w-2 h-2 bg-blue-500 rounded-full opacity-0 group-hover:opacity-100 transition-opacity"></div>
-              </div>
-              <div class="flex-1 min-w-0">
-                <div class="text-[16px] font-bold text-gray-900 group-hover:text-blue-600 transition-colors leading-tight">
-                  {{suggestion.title}}
-                </div>
-                <div class="text-[14px] text-gray-600 mt-1 leading-snug">
-                  {{suggestion.description}}
-                </div>
-              </div>
-              <ArrowRightIcon class="flex-shrink-0 w-5 h-5 text-gray-400 group-hover:text-blue-500 group-hover:translate-x-1 transition-all duration-200"/>
-            </div>
-          </button>
-        </div>
+           class="max-w-3xl mx-auto px-8 text-center">
+        <h1 class="text-3xl font-semibold text-gray-900 mb-2">
+          有什么可以帮您的？
+        </h1>
       </div>
 
       <!-- 消息列表 -->
@@ -179,111 +130,79 @@
       </div>
     </div>
 
-    <!-- 当前工具气泡：在对话区与输入框之间，位于工具按钮上方 -->
-    <div
-      v-if="currentTool !== 'inspection'"
-      class="flex-shrink-0 relative z-10 bg-white/95 backdrop-blur-sm border-t border-slate-100"
-    >
-      <div class="max-w-[50rem] mx-auto px-6 pt-3 pb-2 flex justify-center">
-        <div
-          class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-sm font-medium transition-all duration-200 shadow-sm"
-          :class="getToolBadgeClass(currentTool)"
-        >
-          <span>{{ currentToolBadge?.icon }}</span>
-          <span>{{ currentToolBadge?.name }}</span>
-          <span class="text-[11px] opacity-80 font-normal">当前模块</span>
-          <button
-            type="button"
-            @click="clearToolSelection"
-            class="ml-0.5 p-0.5 rounded-full hover:bg-black/5 transition-opacity"
-            title="切回故障检测"
-          >
-            <XMarkIcon class="w-3.5 h-3.5"/>
-          </button>
-        </div>
-      </div>
-    </div>
-
-    <!-- 输入区域 - 固定在底部 -->
-    <div class="flex-shrink-0 border-blue-200 bg-white shadow-lg relative z-10">
-      <div class="max-w-[50rem] mx-auto px-6 py-5">
-        <!-- 输入框容器 -->
-        <div class="relative"
-             style="height: 56px;">
-          <input
+    <!-- 输入区域 - 文心一言风格 -->
+    <div class="flex-shrink-0 bg-white relative z-10 pb-6">
+      <div class="max-w-3xl mx-auto px-4">
+        <!-- 输入框容器 - 文心一言风格 -->
+        <div class="relative bg-white border border-gray-200 rounded-3xl shadow-lg hover:shadow-xl transition-shadow duration-300">
+          <!-- 输入框 -->
+          <textarea
             ref="inputRef"
             v-model="inputMessage"
-            @keydown.enter.exact.prevent="sendMessage"
+            @keydown.enter.prevent="sendMessage"
             :disabled="isInputDisabled"
             :placeholder="getInputPlaceholder"
-            class="w-full resize-none rounded-2xl bg-white border-2 pl-36 pr-32 py-3.5 text-[15px] text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 disabled:bg-gray-50 disabled:text-gray-400 transition-all leading-[1.5] shadow-sm"
-            :class="isAnalyzing ? 'border-amber-300' : (pendingMessages.size > 0 ? 'border-green-300' : 'border-blue-200')"
-            style="max-height: 200px; height: 57px"
-          />
+            class="w-full px-5 py-4 text-base text-gray-800 placeholder-gray-400 bg-transparent border-none outline-none resize-none"
+            rows="1"
+            style="min-height: 56px; max-height: 200px;"
+          ></textarea>
 
-          <!-- 左侧工具选择器 -->
-          <div class="absolute left-2 bottom-[6px] flex items-center">
-            <ToolSelector 
-              v-model="currentTool"
-              :api-base-url="apiBaseUrl"
-              @tool-change="handleToolChange"
-            />
-          </div>
+          <!-- 底部工具栏 -->
+          <div class="flex items-center justify-between px-3 pb-3">
+            <div class="flex items-center gap-2">
+              <!-- 附件按钮 -->
+              <button class="p-2 rounded-full text-gray-400 hover:text-gray-600 hover:bg-gray-100 transition-colors">
+                <PlusIcon class="w-5 h-5" />
+              </button>
+              <!-- 深度思考按钮 -->
+              <button class="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-sm text-blue-600 bg-blue-50 hover:bg-blue-100 transition-colors border border-blue-100">
+                <SparklesIcon class="w-4 h-4" />
+                <span>思考·自动</span>
+              </button>
+            </div>
 
-          <!-- 右侧工具栏 -->
-          <div class="absolute right-2 bottom-[6px] flex items-center gap-2">
-            <!-- 清空按钮 -->
-            <button
-              v-if="inputMessage.trim()"
-              @click="clearInput"
-              class="p-2 rounded-xl text-gray-400 hover:text-red-600 hover:bg-red-50 transition-all"
-              title="清空输入"
-            >
-              <XMarkIcon class="w-4 h-4"/>
-            </button>
-
-            <!-- 发送按钮 -->
-            <button
-              @click="sendMessage"
-              :disabled="isSendDisabled"
-              class="px-4 py-2.5 rounded-xl font-semibold text-[13px] transition-all flex items-center gap-2 shadow-sm transform relative"
-              :class="isSendDisabled
-                ? 'bg-gray-200 text-gray-400 cursor-not-allowed'
-                : 'bg-blue-500 text-white hover:bg-blue-600 active:scale-95 hover:shadow-md shadow-blue-500/20'"
-            >
-              <PaperAirplaneIcon v-if="!isSending"
-                                 class="w-4 h-4"/>
-              <ArrowPathIcon v-else
-                             class="w-4 h-4 animate-spin"/>
-              <span>{{isSending ? '发送中' : '发送'}}</span>
-            </button>
+            <div class="flex items-center gap-2">
+              <!-- 语音按钮 -->
+              <button class="p-2 rounded-full text-gray-400 hover:text-gray-600 hover:bg-gray-100 transition-colors">
+                <MicrophoneIcon class="w-5 h-5" />
+              </button>
+              <!-- 发送按钮 -->
+              <button
+                @click="sendMessage"
+                :disabled="isSendDisabled"
+                class="p-2.5 rounded-full transition-all duration-200 flex items-center justify-center"
+                :class="isSendDisabled
+                  ? 'bg-gray-100 text-gray-400 cursor-not-allowed'
+                  : 'bg-black text-white hover:bg-gray-800 hover:scale-105'"
+              >
+                <PaperAirplaneIcon v-if="!isSending" class="w-5 h-5" />
+                <ArrowPathIcon v-else class="w-5 h-5 animate-spin" />
+              </button>
+            </div>
           </div>
         </div>
 
-        <!-- 底部提示 - 包含当前工具指示 -->
-        <div class="flex items-center justify-between mt-3.5 px-1">
-          <div class="flex items-center gap-3 text-[12px] text-gray-600">
-            <span v-if="messages.length > 0"
-                  class="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-blue-50 text-blue-600 border border-blue-200">
-              <ChatBubbleLeftRightIcon class="w-3.5 h-3.5"/>
-              <span>已有 {{messages.length}} 条对话</span>
-            </span>
-            <span v-else
-                  class="flex items-center gap-1.5">
-              <SparklesIcon class="w-3.5 h-3.5"/>
-              <span>按 Enter 发送消息</span>
-            </span>
-          </div>
-          <div v-if="messages.length > 0"
-               class="flex items-center gap-2">
-            <button
-              @click="clearChat"
-              class="flex items-center gap-1.5 text-[12px] px-2.5 py-1 rounded-lg text-gray-600 hover:text-red-600 hover:bg-red-50 transition-all border border-transparent hover:border-red-200"
-            >
-              <TrashIcon class="w-3.5 h-3.5"/>
-              <span>清空对话</span>
-            </button>
-          </div>
+        <!-- 快捷工具标签 - 放在输入框下方 -->
+        <div class="flex items-center justify-center gap-2 mt-4 flex-wrap">
+          <button
+            v-for="tool in quickTools"
+            :key="tool.id"
+            @click="selectTool(tool)"
+            class="flex items-center gap-1.5 px-4 py-2 rounded-full text-sm transition-all duration-200"
+            :class="currentTool === tool.id 
+              ? 'bg-blue-50 border border-blue-300 text-blue-600' 
+              : 'bg-white border border-gray-200 hover:border-blue-300 hover:bg-blue-50/50 text-gray-600 hover:text-blue-600'"
+          >
+            <span>{{ tool.icon }}</span>
+            <span>{{ tool.name }}</span>
+          </button>
+        </div>
+
+        <!-- 底部提示 -->
+        <div class="flex items-center justify-center mt-3">
+          <span class="text-xs text-gray-400">
+            按 Enter 发送消息，Shift + Enter 换行
+          </span>
         </div>
       </div>
     </div>
@@ -304,7 +223,9 @@ import {
   ClipboardDocumentListIcon,
   DocumentChartBarIcon,
   ExclamationCircleIcon,
+  MicrophoneIcon,
   PaperAirplaneIcon,
+  PlusIcon,
   SparklesIcon,
   TrashIcon,
   XMarkIcon,
@@ -451,6 +372,20 @@ const suggestions = [
     message: '什么是显黄故障？如何处理？',
   },
 ]
+
+// 快捷工具标签 - 放在输入框下方
+const quickTools = [
+  { id: 'inspection', name: '故障检测', icon: '🔍' },
+  { id: 'planning', name: '维修规划', icon: '📋' },
+  { id: 'repair', name: '维修指导', icon: '🛠️' },
+  { id: 'quality', name: '质量检测', icon: '✅' },
+  { id: 'training', name: '技能培训', icon: '📚' },
+]
+
+// 选择工具
+const selectTool = (tool) => {
+  handleToolChange(tool)
+}
 
 // 输入框占位符
 const getInputPlaceholder = computed(() => {
