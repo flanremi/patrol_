@@ -217,8 +217,6 @@ import katex from 'katex'
 import 'katex/dist/katex.min.css'
 import {
   ArrowPathIcon,
-  ArrowRightIcon,
-  ChatBubbleLeftRightIcon,
   CheckCircleIcon,
   ClipboardDocumentListIcon,
   DocumentChartBarIcon,
@@ -227,11 +225,8 @@ import {
   PaperAirplaneIcon,
   PlusIcon,
   SparklesIcon,
-  TrashIcon,
-  XMarkIcon,
 } from '@heroicons/vue/24/outline'
 import { ChatStoreKey } from '~/composables/useChatStore'
-import ToolSelector from '~/components/workflow/ToolSelector.vue'
 
 // 配置 marked
 marked.setOptions({
@@ -268,10 +263,6 @@ const emit = defineEmits([
   'analysis-complete',
   'analysis-error',
   'tool-change',
-  'show-planning-form',
-  'show-repair-form',
-  'show-quality-check',
-  'show-training-module',
   'quiz-generated',
   'grade-result',
   'courseware-generated',
@@ -344,34 +335,6 @@ const getToolBadgeClass = (toolId) => {
   }
   return map[toolId] || 'bg-slate-100 text-slate-800 border border-slate-200'
 }
-
-// 快捷建议
-const suggestions = [
-  {
-    icon: '🔍',
-    title: '故障排查检测',
-    description: '帮您进行设备故障分析和排查',
-    message: '我想进行故障排查检测',
-  },
-  {
-    icon: '🛠️',
-    title: '轴承温度异常分析',
-    description: '分析轴承温度异常问题',
-    message: '请帮我分析轴承温度异常的故障',
-  },
-  {
-    icon: '📊',
-    title: '设备巡检报告',
-    description: '生成设备巡检分析报告',
-    message: '我需要生成一份设备巡检报告',
-  },
-  {
-    icon: '📚',
-    title: '知识库查询',
-    description: '查询轨道交通维护知识',
-    message: '什么是显黄故障？如何处理？',
-  },
-]
 
 // 快捷工具标签 - 放在输入框下方
 const quickTools = [
@@ -1125,11 +1088,6 @@ const handleToolChange = (tool) => {
   
   // 通知父组件工具已切换
   emit('tool-change', tool)
-}
-
-const clearToolSelection = () => {
-  const inspection = MODULE_TOOLS.find((t) => t.id === 'inspection')
-  if (inspection) handleToolChange(inspection)
 }
 
 // 发送表单数据到后端（供父组件调用）
