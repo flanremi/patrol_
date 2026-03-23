@@ -30,6 +30,17 @@ load_dotenv(_env_path)
 # 导入巡检智能体（其内部会按 rag_config.RAG_MODE 决定是否连接 Neo4j）
 from inspection_agent import InspectionAgent, InspectionInput
 
+# 导入新的模块化 Agent
+from message_queue import (
+    MessageQueue, MessageQueueManager, MessageRole, AgentType,
+    generate_message_header, WSMessageBuilder, message_queue_manager
+)
+from planning_agent import PlanningAgent
+from repair_agent import RepairAgent
+from quality_agent import QualityAgent
+from training_agent import TrainingAgent
+from field_guidance_agent import FieldGuidanceAgent
+
 
 # ===================== 会话历史管理 =====================
 class SessionHistory:
@@ -297,6 +308,16 @@ class ConnectionManager:
 manager = ConnectionManager()
 inspection_agent: Optional[InspectionAgent] = None
 
+# 新的模块化 Agent 实例
+planning_agent: Optional[PlanningAgent] = None
+repair_agent: Optional[RepairAgent] = None
+quality_agent: Optional[QualityAgent] = None
+training_agent: Optional[TrainingAgent] = None
+field_guidance_agent: Optional[FieldGuidanceAgent] = None
+
+# 当前工具/模块选择（每个连接独立维护）
+connection_tools: Dict[WebSocket, str] = {}  # websocket -> tool_name
+
 
 # ===================== RAG 接入方案配置 =====================
 # 与 rag_config 保持一致，单一数据源，避免与 inspection_agent 不同步
@@ -387,6 +408,27 @@ async def lifespan(app: FastAPI):
         import traceback
         traceback.print_exc()
     
+    # 3. 初始化模块化 Agent
+    global planning_agent, repair_agent, quality_agent, training_agent, field_guidance_agent
+    
+    print("🚀 正在初始化模块化 Agent...")
+    try:
+        planning_agent = PlanningAgent()
+        repair_agent = RepairAgent()
+        quality_agent = QualityAgent()
+        training_agent = TrainingAgent()
+        field_guidance_agent = FieldGuidanceAgent()
+        print("✅ 模块化 Agent 初始化成功！")
+        print(f"   📅 巡检计划生成 Agent")
+        print(f"   🔧 维修方案咨询 Agent")
+        print(f"   ✅ 工单质量检查 Agent")
+        print(f"   📚 新员工培训 Agent")
+        print(f"   📍 现场作业指导 Agent")
+    except Exception as e:
+        print(f"⚠️ 模块化 Agent 初始化失败: {e}")
+        import traceback
+        traceback.print_exc()
+    
     yield
     print("👋 服务关闭")
 
@@ -449,6 +491,56 @@ async def get_graph_info():
         return {"error": str(e), "graph_structure": None}
 
 
+@app.get("/tools/list")
+async def get_tools_list():
+    """获取可用的工具/模块列表"""
+    tools = [
+        {
+            "id": "inspection",
+            "name": "故障检测",
+            "icon": "🔍",
+            "description": "智能故障检测与分析",
+            "ready": inspection_agent is not None
+        },
+        {
+            "id": "planning",
+            "name": "巡检计划",
+            "icon": "📅",
+            "description": "自动生成巡检计划",
+            "ready": planning_agent is not None
+        },
+        {
+            "id": "repair",
+            "name": "维修方案",
+            "icon": "🔧",
+            "description": "维修方案咨询",
+            "ready": repair_agent is not None
+        },
+        {
+            "id": "quality",
+            "name": "工单质检",
+            "icon": "✅",
+            "description": "工单质量检查",
+            "ready": quality_agent is not None
+        },
+        {
+            "id": "training",
+            "name": "员工培训",
+            "icon": "📚",
+            "description": "新员工培训系统",
+            "ready": training_agent is not None
+        },
+        {
+            "id": "field_guidance",
+            "name": "现场指导",
+            "icon": "📍",
+            "description": "现场作业技术指导",
+            "ready": field_guidance_agent is not None
+        }
+    ]
+    return {"tools": tools}
+
+
 # ===================== WebSocket 端点 =====================
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
@@ -485,11 +577,43 @@ async def websocket_endpoint(websocket: WebSocket):
         manager.disconnect(websocket)
 
 
+def _normalize_ws_action_payload(data: Dict[str, Any]) -> tuple[str, Dict[str, Any]]:
+    """解析并规范化 WebSocket 消息的 action / data，兼容多种客户端格式。"""
+    payload = data.get("data", {})
+    if not isinstance(payload, dict):
+        payload = {}
+    action = data.get("action", "")
+    action = str(action).strip() if action is not None else ""
+    # 兼容：仅把子动作放在 data 内，例如 { "type":"system", "data": { "action":"select_tool", "tool_id":"planning" } }
+    if not action and payload.get("action") is not None:
+        action = str(payload.get("action", "")).strip()
+    return action, payload
+
+
+async def _apply_tool_selection(websocket: WebSocket, payload: Dict[str, Any]) -> None:
+    """切换当前连接使用的工具/模块（与 handle_system_message 中逻辑一致）。"""
+    tool_id = payload.get("tool_id", "inspection")
+    if not isinstance(tool_id, str):
+        tool_id = str(tool_id)
+    tool_id = tool_id.strip() or "inspection"
+    connection_tools[websocket] = tool_id
+    tool_info = _get_tool_info(tool_id)
+    await manager.send_message(websocket, WSMessage(
+        type="system",
+        action="tool_selected",
+        data={
+            "tool_id": tool_id,
+            "tool_info": tool_info,
+            "message": f"已切换到 {tool_info.get('name', tool_id)} 模块"
+        }
+    ))
+    print(f"🔄 连接 {manager.get_connection_id(websocket)} 切换到工具: {tool_id}")
+
+
 async def handle_message(websocket: WebSocket, data: Dict[str, Any]):
     """处理接收到的消息"""
-    msg_type = data.get("type", "")
-    action = data.get("action", "")
-    payload = data.get("data", {})
+    msg_type = str(data.get("type", "") or "").strip()
+    action, payload = _normalize_ws_action_payload(data)
 
     print(f"📨 收到消息: type={msg_type}, action={action}")
 
@@ -499,6 +623,9 @@ async def handle_message(websocket: WebSocket, data: Dict[str, Any]):
         await handle_chat_message(websocket, action, payload)
     elif msg_type == "tool":
         await handle_tool_message(websocket, action, payload)
+    elif msg_type == "module":
+        # 新增：模块消息处理
+        await handle_module_message(websocket, action, payload)
     else:
         await manager.send_message(websocket, WSMessage(
             type="system",
@@ -521,9 +648,12 @@ async def handle_system_message(websocket: WebSocket, action: str, payload: Dict
             action="status",
             data={
                 "agent_ready": inspection_agent is not None,
-                "connections": len(manager.active_connections)
+                "connections": len(manager.active_connections),
+                "current_tool": connection_tools.get(websocket, "inspection")
             }
         ))
+    elif action == "select_tool":
+        await _apply_tool_selection(websocket, payload)
     else:
         await manager.send_message(websocket, WSMessage(
             type="system",
@@ -532,8 +662,62 @@ async def handle_system_message(websocket: WebSocket, action: str, payload: Dict
         ))
 
 
+def _get_tool_info(tool_id: str) -> Dict[str, Any]:
+    """获取工具信息"""
+    tools = {
+        "inspection": {
+            "id": "inspection",
+            "name": "故障检测",
+            "icon": "🔍",
+            "agent_type": "inspection",
+            "has_form": True
+        },
+        "planning": {
+            "id": "planning",
+            "name": "巡检计划",
+            "icon": "📅",
+            "agent_type": "planning",
+            "has_form": True
+        },
+        "repair": {
+            "id": "repair",
+            "name": "维修方案",
+            "icon": "🔧",
+            "agent_type": "repair",
+            "has_form": True
+        },
+        "quality": {
+            "id": "quality",
+            "name": "工单质检",
+            "icon": "✅",
+            "agent_type": "quality",
+            "has_form": False,
+            "supports_upload": True
+        },
+        "training": {
+            "id": "training",
+            "name": "员工培训",
+            "icon": "📚",
+            "agent_type": "training",
+            "has_form": False,
+            "has_quiz": True
+        },
+        "field_guidance": {
+            "id": "field_guidance",
+            "name": "现场指导",
+            "icon": "📍",
+            "agent_type": "field_guidance",
+            "has_form": True,
+            "supports_image": True,
+            "supports_voice": True,
+            "supports_location": True
+        }
+    }
+    return tools.get(tool_id, tools["inspection"])
+
+
 async def handle_chat_message(websocket: WebSocket, action: str, payload: Dict):
-    """处理聊天消息 - 非阻塞模式，支持并发对话"""
+    """处理聊天消息 - 非阻塞模式，支持并发对话和工具路由"""
     if action == "send":
         message = payload.get("message", "")
         if not message:
@@ -544,34 +728,52 @@ async def handle_chat_message(websocket: WebSocket, action: str, payload: Dict):
             ))
             return
 
-        if inspection_agent is None:
-            await manager.send_message(websocket, WSMessage(
-                type="system",
-                action="error",
-                data={"error": "智能体未初始化"}
-            ))
-            return
+        # 获取当前选择的工具
+        current_tool = connection_tools.get(websocket, "inspection")
+        
+        # 生成消息 ID 用于追踪
+        message_id = str(uuid.uuid4())[:8]
+        
+        # 获取工具信息
+        tool_info = _get_tool_info(current_tool)
+
+        # 开始处理 - 附带工具信息
+        await manager.send_message(websocket, WSMessage(
+            type="chat",
+            action="start",
+            data={
+                "message": f"{tool_info.get('icon', '🤖')} 开始处理消息...",
+                "message_id": message_id,
+                "tool_id": current_tool,
+                "agent_header": f"{tool_info.get('icon', '🤖')} 【{tool_info.get('name', '智能体')}】"
+            }
+        ))
 
         # 获取会话历史
         session_history = manager.get_session_history(websocket)
         if session_history:
             session_history.add_user_message(message)
 
-        # 生成消息 ID 用于追踪
-        message_id = str(uuid.uuid4())[:8]
-
-        # 开始处理
-        await manager.send_message(websocket, WSMessage(
-            type="chat",
-            action="start",
-            data={"message": "开始处理消息...", "message_id": message_id}
-        ))
-
-        # 创建后台任务处理聊天（非阻塞）
-        print(f"🚀 [主循环] 创建后台任务 [{message_id}]: {message[:30]}...")
-        asyncio.create_task(_process_chat_in_background(
-            websocket, message, message_id, session_history
-        ))
+        # 根据工具类型路由到不同的 Agent
+        print(f"🚀 [主循环] 创建后台任务 [{message_id}] 工具={current_tool}: {message[:30]}...")
+        
+        if current_tool == "inspection":
+            # 原有的故障检测 Agent
+            if inspection_agent is None:
+                await manager.send_message(websocket, WSMessage(
+                    type="system",
+                    action="error",
+                    data={"error": "故障检测智能体未初始化"}
+                ))
+                return
+            asyncio.create_task(_process_chat_in_background(
+                websocket, message, message_id, session_history
+            ))
+        else:
+            # 新的模块化 Agent
+            asyncio.create_task(_process_module_chat_in_background(
+                websocket, message, message_id, session_history, current_tool
+            ))
         
         # 立即返回，允许接收下一条消息
         print(f"✅ [主循环] 已返回，可接收下一条消息")
@@ -720,6 +922,216 @@ async def _process_chat_in_background(
             action="error",
             data={"error": str(e), "message_id": message_id}
         ))
+
+
+async def _process_module_chat_in_background(
+    websocket: WebSocket,
+    message: str,
+    message_id: str,
+    session_history: Optional[SessionHistory],
+    tool_id: str
+):
+    """后台处理模块化 Agent 聊天消息"""
+    print(f"🔧 [模块后台任务 {message_id}] 工具={tool_id} 开始执行")
+    main_loop = asyncio.get_running_loop()
+    
+    try:
+        # 获取连接 ID 和消息队列
+        connection_id = manager.get_connection_id(websocket)
+        msg_queue = await message_queue_manager.get_or_create_queue(connection_id)
+        
+        # 创建异步回调
+        async def ws_callback(msg_type: str, action: str, data: dict):
+            data_with_id = {**data, "message_id": message_id, "tool_id": tool_id}
+            await manager.send_message(websocket, WSMessage(
+                type=msg_type,
+                action=action,
+                data=data_with_id
+            ))
+        
+        ai_response = ""
+        
+        # 根据工具类型选择 Agent
+        if tool_id == "planning":
+            if planning_agent:
+                ai_response = await planning_agent.process_message(
+                    message, msg_queue, ws_callback
+                )
+        elif tool_id == "repair":
+            if repair_agent:
+                ai_response = await repair_agent.process_message(
+                    message, msg_queue, ws_callback
+                )
+        elif tool_id == "quality":
+            if quality_agent:
+                ai_response = await quality_agent.process_message(
+                    message, msg_queue, ws_callback
+                )
+        elif tool_id == "training":
+            if training_agent:
+                ai_response = await training_agent.process_message(
+                    message, msg_queue, ws_callback
+                )
+        elif tool_id == "field_guidance":
+            if field_guidance_agent:
+                ai_response = await field_guidance_agent.process_message(
+                    message, msg_queue, ws_callback
+                )
+        else:
+            ai_response = f"未知的工具类型: {tool_id}"
+        
+        # 保存 AI 回复到会话历史
+        if session_history and ai_response:
+            session_history.add_ai_message(ai_response)
+        
+        # 发送完成消息
+        await manager.send_message(websocket, WSMessage(
+            type="chat",
+            action="complete",
+            data={"message": "处理完成", "message_id": message_id, "tool_id": tool_id}
+        ))
+        
+    except Exception as e:
+        print(f"❌ 模块后台处理消息失败 [{message_id}]: {e}")
+        import traceback
+        traceback.print_exc()
+        await manager.send_message(websocket, WSMessage(
+            type="chat",
+            action="error",
+            data={"error": str(e), "message_id": message_id, "tool_id": tool_id}
+        ))
+
+
+async def handle_module_message(websocket: WebSocket, action: str, payload: Dict):
+    """处理模块特定消息"""
+    # 兼容旧前端误将 kind 当作 action 发送（如 action=quality）
+    if action == "quality":
+        action = "upload_content"
+        payload = {**payload, "tool_id": payload.get("tool_id") or "quality"}
+        if not payload.get("content") and isinstance(payload.get("form_data"), dict):
+            payload = {**payload, "content": payload["form_data"].get("content", "")}
+
+    tool_id = payload.get("tool_id", "")
+    message_id = str(uuid.uuid4())[:8]
+    
+    print(f"📦 [模块消息] action={action}, tool_id={tool_id}")
+    
+    # 获取连接 ID 和消息队列
+    connection_id = manager.get_connection_id(websocket)
+    msg_queue = await message_queue_manager.get_or_create_queue(connection_id)
+    
+    # 创建异步回调
+    async def ws_callback(msg_type: str, action: str, data: dict):
+        data_with_id = {**data, "message_id": message_id, "tool_id": tool_id}
+        await manager.send_message(websocket, WSMessage(
+            type=msg_type,
+            action=action,
+            data=data_with_id
+        ))
+    
+    try:
+        if action == "form_submit":
+            # 处理表单提交
+            form_data = payload.get("form_data", {})
+            
+            if tool_id == "planning":
+                if planning_agent:
+                    await ws_callback("system", "agent_start", {
+                        "message": "📅 正在生成巡检计划..."
+                    })
+                    result = await planning_agent.generate_plan(form_data, msg_queue, ws_callback)
+                    
+            elif tool_id == "repair":
+                if repair_agent:
+                    await ws_callback("system", "agent_start", {
+                        "message": "🔧 正在生成维修方案..."
+                    })
+                    result = await repair_agent.consult_repair(form_data, msg_queue, ws_callback)
+            
+            elif tool_id == "field_guidance":
+                if field_guidance_agent:
+                    await ws_callback("system", "agent_start", {
+                        "message": "📍 正在分析现场问题..."
+                    })
+                    result = await field_guidance_agent.provide_guidance(form_data, msg_queue, ws_callback)
+            
+            else:
+                await ws_callback("system", "error", {
+                    "error": f"不支持的表单提交: {tool_id}"
+                })
+        
+        elif action == "upload_content":
+            # 处理内容上传（用于工单质检）
+            content = payload.get("content", "")
+            
+            if tool_id == "quality" and quality_agent:
+                await ws_callback("system", "agent_start", {
+                    "message": "✅ 正在审核工单..."
+                })
+                result = await quality_agent.check_work_order(content, msg_queue, ws_callback)
+                
+                # 发送审核结果
+                await ws_callback("tool", "quality_check_result", {
+                    "passed": result.get("passed", False),
+                    "report": result.get("report", ""),
+                    "issues": result.get("issues", [])
+                })
+        
+        elif action == "generate_quiz":
+            # 生成培训试题
+            topic = payload.get("topic", "")
+            
+            if tool_id == "training" and training_agent:
+                await ws_callback("system", "agent_start", {
+                    "message": "📚 正在生成培训试题..."
+                })
+                quiz = await training_agent.generate_quiz(topic, msg_queue, ws_callback)
+                
+                # 发送试题数据
+                await ws_callback("tool", "quiz_generated", {
+                    "quiz": quiz
+                })
+        
+        elif action == "submit_answers":
+            # 提交试题答案
+            answers = payload.get("answers", {})
+            
+            if tool_id == "training" and training_agent:
+                await ws_callback("system", "agent_start", {
+                    "message": "📝 正在批改作业..."
+                })
+                grade = await training_agent.grade_answers(answers, msg_queue, ws_callback)
+                
+                # 发送批改结果
+                await ws_callback("tool", "grade_result", {
+                    "grade": grade
+                })
+        
+        elif action == "get_courseware":
+            # 获取培训课件
+            if tool_id == "training" and training_agent:
+                await ws_callback("system", "agent_start", {
+                    "message": "📖 正在生成培训课件..."
+                })
+                courseware = await training_agent.generate_courseware(msg_queue, ws_callback)
+                
+                # 发送课件
+                await ws_callback("tool", "courseware_generated", {
+                    "courseware": courseware
+                })
+        
+        else:
+            await ws_callback("system", "error", {
+                "error": f"未知的模块动作: {action}"
+            })
+            
+    except Exception as e:
+        print(f"❌ 模块消息处理失败: {e}")
+        import traceback
+        traceback.print_exc()
+        await ws_callback("system", "error", {
+            "error": str(e)
+        })
 
 
 def _create_thread_safe_callback(websocket: WebSocket, task: AnalysisTask, main_loop: asyncio.AbstractEventLoop):
@@ -888,6 +1300,11 @@ async def _run_analysis_in_background(
 
 async def handle_tool_message(websocket: WebSocket, action: str, payload: Dict):
     """处理工具消息 - 非阻塞模式"""
+    # 兼容：部分前端/代理误将 select_tool 发到 type=tool
+    if action == "select_tool":
+        await _apply_tool_selection(websocket, payload)
+        return
+
     if action == "form_submit":
         form_data = payload.get("form_data", {})
         if not form_data:

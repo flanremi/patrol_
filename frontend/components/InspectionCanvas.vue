@@ -41,8 +41,8 @@
 
     <!-- 主内容区域 -->
     <div ref="scrollContainer" class="flex-1 overflow-y-auto p-6">
-      <!-- 工单表单视图 -->
-      <div v-if="currentView === 'form'" class="max-w-3xl mx-auto">
+      <!-- 工单表单视图 (故障检测模块) -->
+      <div v-if="currentView === 'form' && props.currentTool === 'inspection'" class="max-w-3xl mx-auto">
         <div class="bg-white rounded-2xl shadow-xl border border-slate-200/60 overflow-hidden">
           <!-- 表单头部装饰 -->
           <div class="h-2 bg-gradient-to-r from-blue-500 via-blue-400 to-cyan-400"></div>
@@ -444,6 +444,53 @@
         </div>
       </div>
 
+      <!-- 巡检计划生成模块 -->
+      <div v-else-if="currentView === 'form' && props.currentTool === 'planning'" class="max-w-3xl mx-auto">
+        <PlanningForm
+          ref="planningFormRef"
+          @submit="handlePlanningSubmit"
+          @cancel="emit('close')"
+        />
+      </div>
+
+      <!-- 维修方案咨询模块 -->
+      <div v-else-if="currentView === 'form' && props.currentTool === 'repair'" class="max-w-3xl mx-auto">
+        <RepairForm
+          ref="repairFormRef"
+          @submit="handleRepairSubmit"
+          @cancel="emit('close')"
+        />
+      </div>
+
+      <!-- 工单质量检查模块 -->
+      <div v-else-if="currentView === 'form' && props.currentTool === 'quality'" class="max-w-3xl mx-auto">
+        <QualityCheck
+          ref="qualityCheckRef"
+          @submit="handleQualitySubmit"
+          @cancel="emit('close')"
+        />
+      </div>
+
+      <!-- 员工培训模块 -->
+      <div v-else-if="currentView === 'form' && props.currentTool === 'training'" class="max-w-3xl mx-auto">
+        <TrainingModule
+          ref="trainingModuleRef"
+          @generate-quiz="handleGenerateQuiz"
+          @submit-answers="handleSubmitAnswers"
+          @get-courseware="handleGetCourseware"
+          @cancel="emit('close')"
+        />
+      </div>
+
+      <!-- 现场作业指导模块 -->
+      <div v-else-if="currentView === 'form' && props.currentTool === 'field_guidance'" class="max-w-3xl mx-auto">
+        <FieldGuidance
+          ref="fieldGuidanceRef"
+          @submit="handleFieldGuidanceSubmit"
+          @cancel="emit('close')"
+        />
+      </div>
+
       <!-- 空状态 -->
       <div v-else class="h-full flex items-center justify-center">
         <div class="text-center">
@@ -476,7 +523,16 @@ import {
   CogIcon,
   BeakerIcon,
   WrenchScrewdriverIcon,
+  CalendarDaysIcon,
+  AcademicCapIcon,
+  ClipboardDocumentCheckIcon,
 } from '@heroicons/vue/24/outline'
+
+import PlanningForm from '~/components/workflow/PlanningForm.vue'
+import RepairForm from '~/components/workflow/RepairForm.vue'
+import QualityCheck from '~/components/workflow/QualityCheck.vue'
+import TrainingModule from '~/components/workflow/TrainingModule.vue'
+import FieldGuidance from '~/components/workflow/FieldGuidance.vue'
 
 // 滚动容器引用
 const scrollContainer = ref(null)
@@ -499,13 +555,55 @@ const props = defineProps({
     type: Object,
     default: null,
   },
+  // 当前工具/模块
+  currentTool: {
+    type: String,
+    default: 'inspection'
+  },
+  // 试题数据（培训模块）
+  quizData: {
+    type: Object,
+    default: null
+  },
+  // 批改结果（培训模块）
+  gradeData: {
+    type: Object,
+    default: null
+  },
+  // 课件内容（培训模块）
+  coursewareContent: {
+    type: String,
+    default: ''
+  },
+  // 工单质检结果
+  qualityCheckResult: {
+    type: Object,
+    default: null
+  }
 })
 
 // Emits
-const emit = defineEmits(['submit', 'close'])
+const emit = defineEmits([
+  'submit', 
+  'close',
+  'planning-submit',
+  'repair-submit',
+  'quality-submit',
+  'generate-quiz',
+  'submit-answers',
+  'get-courseware',
+  'field-guidance-submit'
+])
 
 // 工单编号
 const workOrderNo = ref(`FD${Date.now().toString().slice(-8)}`)
+
+// 模块组件引用
+const planningFormRef = ref(null)
+const repairFormRef = ref(null)
+const qualityCheckRef = ref(null)
+const trainingModuleRef = ref(null)
+const fieldGuidanceRef = ref(null)
 
 // 当前视图: 'form' | 'analyzing' | 'result'
 const currentView = ref('form')
@@ -539,17 +637,37 @@ const hasSupplementaryRetrieval = ref(false)
 
 // 视图标题和副标题
 const viewTitle = computed(() => {
+  if (currentView.value === 'form') {
+    const titles = {
+      'inspection': '故障检测工单',
+      'planning': '巡检计划生成',
+      'repair': '维修方案咨询',
+      'quality': '工单质量检查',
+      'training': '员工培训系统',
+      'field_guidance': '现场作业指导'
+    }
+    return titles[props.currentTool] || '巡检分析'
+  }
   switch (currentView.value) {
-    case 'form': return '故障检测工单'
     case 'analyzing': return '智能分析进行中'
-    case 'result': return '故障分析报告'
+    case 'result': return '分析报告'
     default: return '巡检分析'
   }
 })
 
 const viewSubtitle = computed(() => {
+  if (currentView.value === 'form') {
+    const subtitles = {
+      'inspection': '填写缺陷信息进行智能分析',
+      'planning': '输入计划参数自动生成巡检计划',
+      'repair': '输入缺陷信息获取维修方案',
+      'quality': '上传工单内容进行质量审核',
+      'training': '角色扮演式故障处置培训',
+      'field_guidance': '语音/拍照/位置感知的智能指导'
+    }
+    return subtitles[props.currentTool] || ''
+  }
   switch (currentView.value) {
-    case 'form': return '填写缺陷信息进行智能分析'
     case 'analyzing': return `已完成 ${analysisSteps.value.length} 个分析步骤`
     case 'result': return '查看详细分析结果'
     default: return ''
@@ -752,6 +870,78 @@ const resetForm = () => {
   workOrderNo.value = `FD${Date.now().toString().slice(-8)}`
 }
 
+// ========== 新模块处理方法 ==========
+
+// 处理巡检计划提交
+const handlePlanningSubmit = (data) => {
+  console.log('📅 巡检计划提交:', data)
+  emit('planning-submit', data)
+}
+
+// 处理维修方案提交
+const handleRepairSubmit = (data) => {
+  console.log('🔧 维修方案提交:', data)
+  emit('repair-submit', data)
+}
+
+// 处理工单质检提交
+const handleQualitySubmit = (data) => {
+  console.log('✅ 工单质检提交:', data)
+  emit('quality-submit', data)
+}
+
+// 处理生成试题
+const handleGenerateQuiz = (data) => {
+  console.log('📚 生成试题:', data)
+  emit('generate-quiz', data)
+}
+
+// 处理提交答案
+const handleSubmitAnswers = (data) => {
+  console.log('📝 提交答案:', data)
+  emit('submit-answers', data)
+}
+
+// 处理获取课件
+const handleGetCourseware = () => {
+  console.log('📖 获取课件')
+  emit('get-courseware')
+}
+
+// 处理现场作业指导提交
+const handleFieldGuidanceSubmit = (data) => {
+  console.log('📍 现场指导提交:', data)
+  emit('field-guidance-submit', data)
+}
+
+// 设置试题数据（供父组件调用）
+const setQuizData = (quiz) => {
+  if (trainingModuleRef.value) {
+    trainingModuleRef.value.setQuiz(quiz)
+  }
+}
+
+// 设置批改结果（供父组件调用）
+const setGradeResult = (grade) => {
+  if (trainingModuleRef.value) {
+    trainingModuleRef.value.setGradeResult(grade)
+  }
+}
+
+// 设置课件内容（供父组件调用）
+const setCourseware = (content) => {
+  if (trainingModuleRef.value) {
+    trainingModuleRef.value.setCourseware(content)
+  }
+}
+
+// 设置工单质检结果（供父组件调用）
+const setQualityCheckResult = (result) => {
+  if (qualityCheckRef.value) {
+    qualityCheckRef.value.setCheckResult(result)
+  }
+}
+
 // 添加分析步骤
 const addAnalysisStep = (step) => {
   console.log('📥 InspectionCanvas.addAnalysisStep:', step)
@@ -897,10 +1087,20 @@ const renderMarkdown = (content) => {
   }
 }
 
+/** 聊天侧收到 Agent 回复后，解除各业务模块表单的「提交中」锁定（不含故障检测工单，避免分析进行中误解锁） */
+const resetModuleFormsIdle = () => {
+  planningFormRef.value?.resetSubmitting?.()
+  repairFormRef.value?.resetSubmitting?.()
+  qualityCheckRef.value?.resetSubmitting?.()
+  trainingModuleRef.value?.resetLoading?.()
+  fieldGuidanceRef.value?.resetSubmitting?.()
+}
+
 // 暴露方法
 defineExpose({
   resetForm,
   setSubmitting: (value) => { isSubmitting.value = value },
+  resetModuleFormsIdle,
   showFormView: () => { currentView.value = 'form' },
   showAnalyzingView: () => { currentView.value = 'analyzing' },
   showResultView: () => { currentView.value = 'result' },
@@ -908,8 +1108,11 @@ defineExpose({
   addAnalysisStep,
   completeAnalysis,
   clearSteps,
-  // 获取当前分析步骤
   getAnalysisSteps: () => analysisSteps.value,
+  setQuizData,
+  setGradeResult,
+  setCourseware,
+  setQualityCheckResult,
 })
 </script>
 

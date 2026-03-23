@@ -132,7 +132,11 @@
                 class="ml-2 px-2 py-0.5 rounded-lg text-[11px] font-bold transition-all"
                 :class="message.actionType === 'form' 
                   ? 'bg-blue-200 hover:bg-blue-300 text-blue-700' 
-                  : 'bg-green-200 hover:bg-green-300 text-green-700'"
+                  : message.actionType === 'qualityResult'
+                    ? 'bg-emerald-200 hover:bg-emerald-300 text-emerald-800'
+                    : message.actionType === 'gradeResult'
+                      ? 'bg-purple-200 hover:bg-purple-300 text-purple-800'
+                      : 'bg-green-200 hover:bg-green-300 text-green-700'"
               >
                 {{ message.actionLabel || '查看' }}
               </button>
@@ -175,6 +179,31 @@
       </div>
     </div>
 
+    <!-- 当前工具气泡：在对话区与输入框之间，位于工具按钮上方 -->
+    <div
+      v-if="currentTool !== 'inspection'"
+      class="flex-shrink-0 relative z-10 bg-white/95 backdrop-blur-sm border-t border-slate-100"
+    >
+      <div class="max-w-[50rem] mx-auto px-6 pt-3 pb-2 flex justify-center">
+        <div
+          class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-sm font-medium transition-all duration-200 shadow-sm"
+          :class="getToolBadgeClass(currentTool)"
+        >
+          <span>{{ currentToolBadge?.icon }}</span>
+          <span>{{ currentToolBadge?.name }}</span>
+          <span class="text-[11px] opacity-80 font-normal">当前模块</span>
+          <button
+            type="button"
+            @click="clearToolSelection"
+            class="ml-0.5 p-0.5 rounded-full hover:bg-black/5 transition-opacity"
+            title="切回故障检测"
+          >
+            <XMarkIcon class="w-3.5 h-3.5"/>
+          </button>
+        </div>
+      </div>
+    </div>
+
     <!-- 输入区域 - 固定在底部 -->
     <div class="flex-shrink-0 border-blue-200 bg-white shadow-lg relative z-10">
       <div class="max-w-[50rem] mx-auto px-6 py-5">
@@ -187,12 +216,21 @@
             @keydown.enter.exact.prevent="sendMessage"
             :disabled="isInputDisabled"
             :placeholder="getInputPlaceholder"
-            class="w-full resize-none rounded-2xl bg-white border-2 px-5 py-3.5 pr-28 text-[15px] text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 disabled:bg-gray-50 disabled:text-gray-400 transition-all leading-[1.5] shadow-sm"
+            class="w-full resize-none rounded-2xl bg-white border-2 pl-36 pr-32 py-3.5 text-[15px] text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 disabled:bg-gray-50 disabled:text-gray-400 transition-all leading-[1.5] shadow-sm"
             :class="isAnalyzing ? 'border-amber-300' : (pendingMessages.size > 0 ? 'border-green-300' : 'border-blue-200')"
             style="max-height: 200px; height: 57px"
           />
 
-          <!-- 工具栏 -->
+          <!-- 左侧工具选择器 -->
+          <div class="absolute left-2 bottom-[6px] flex items-center">
+            <ToolSelector 
+              v-model="currentTool"
+              :api-base-url="apiBaseUrl"
+              @tool-change="handleToolChange"
+            />
+          </div>
+
+          <!-- 右侧工具栏 -->
           <div class="absolute right-2 bottom-[6px] flex items-center gap-2">
             <!-- 清空按钮 -->
             <button
@@ -222,7 +260,7 @@
           </div>
         </div>
 
-        <!-- 底部提示 -->
+        <!-- 底部提示 - 包含当前工具指示 -->
         <div class="flex items-center justify-between mt-3.5 px-1">
           <div class="flex items-center gap-3 text-[12px] text-gray-600">
             <span v-if="messages.length > 0"
@@ -272,6 +310,7 @@ import {
   XMarkIcon,
 } from '@heroicons/vue/24/outline'
 import { ChatStoreKey } from '~/composables/useChatStore'
+import ToolSelector from '~/components/workflow/ToolSelector.vue'
 
 // 配置 marked
 marked.setOptions({
@@ -306,7 +345,17 @@ const emit = defineEmits([
   'analysis-start',
   'analysis-step',
   'analysis-complete',
-  'analysis-error'
+  'analysis-error',
+  'tool-change',
+  'show-planning-form',
+  'show-repair-form',
+  'show-quality-check',
+  'show-training-module',
+  'quiz-generated',
+  'grade-result',
+  'courseware-generated',
+  'agent-response',
+  'quality-check-result',
 ])
 
 // 注入聊天存储
@@ -341,6 +390,39 @@ let ws = null
 let reconnectTimer = null
 const maxReconnectAttempts = 5
 let reconnectAttempts = 0
+
+// 工具选择状态（与 ToolSelector 默认列表一致，用于气泡展示）
+const MODULE_TOOLS = [
+  { id: 'inspection', name: '故障检测', icon: '🔍' },
+  { id: 'planning', name: '巡检计划', icon: '📅' },
+  { id: 'repair', name: '维修方案', icon: '🔧' },
+  { id: 'quality', name: '工单质检', icon: '✅' },
+  { id: 'training', name: '员工培训', icon: '📚' },
+  { id: 'field_guidance', name: '现场指导', icon: '📍' },
+]
+
+const currentTool = ref('inspection')
+const currentToolInfo = ref({
+  id: 'inspection',
+  name: '故障检测',
+  icon: '🔍'
+})
+
+const currentToolBadge = computed(() =>
+  MODULE_TOOLS.find((t) => t.id === currentTool.value) || currentToolInfo.value
+)
+
+const getToolBadgeClass = (toolId) => {
+  const map = {
+    inspection: 'bg-blue-100 text-blue-800 border border-blue-200',
+    planning: 'bg-green-100 text-green-800 border border-green-200',
+    repair: 'bg-orange-100 text-orange-800 border border-orange-200',
+    quality: 'bg-emerald-100 text-emerald-800 border border-emerald-200',
+    training: 'bg-purple-100 text-purple-800 border border-purple-200',
+    field_guidance: 'bg-teal-100 text-teal-800 border border-teal-200',
+  }
+  return map[toolId] || 'bg-slate-100 text-slate-800 border border-slate-200'
+}
 
 // 快捷建议
 const suggestions = [
@@ -664,6 +746,11 @@ const handleAnalysisMessage = (action, payload) => {
   }
 }
 
+/** 后端已有回复（含 AI 正文、一轮结束或错误）时通知侧栏表单恢复可提交 */
+const notifyAgentResponse = (detail = {}) => {
+  emit('agent-response', detail)
+}
+
 const handleSystemMessage = (action, payload) => {
   if (action === 'connected') {
     console.log('连接 ID:', payload?.connection_id)
@@ -683,6 +770,9 @@ const handleSystemMessage = (action, payload) => {
       chatStore.emitNodeUnhighlight(payload.node)
       chatStore.emitNodeStatusChange(payload.node, 'completed')
     }
+  } else if (action === 'tool_selected') {
+    // 后端确认工具切换（避免误报未知动作）
+    console.log('✅ 工具已切换:', payload?.tool_id, payload?.tool_info)
   } else if (action === 'error') {
     addMessage({
       id: Date.now(),
@@ -690,6 +780,7 @@ const handleSystemMessage = (action, payload) => {
       content: `❌ 错误: ${payload?.error || '未知错误'}`,
       error: true,
     })
+    notifyAgentResponse({ source: 'system', kind: 'error' })
   }
 }
 
@@ -719,6 +810,9 @@ const handleChatMessage = (action, payload) => {
         node_path: payload.node_path,
         messageId: messageId, // 关联消息 ID
       })
+      if (String(payload.content).trim()) {
+        notifyAgentResponse({ source: 'chat', kind: 'message' })
+      }
     }
   } else if (action === 'complete') {
     // 移除已完成的消息追踪
@@ -734,6 +828,7 @@ const handleChatMessage = (action, payload) => {
 
     // 不再添加"处理完成"系统消息，避免并发时消息混乱
     console.log(`✅ 消息处理完成 [${messageId || 'unknown'}]`)
+    notifyAgentResponse({ source: 'chat', kind: 'complete' })
   } else if (action === 'error') {
     // 移除失败的消息追踪
     if (messageId) {
@@ -752,6 +847,7 @@ const handleChatMessage = (action, payload) => {
       error: true,
       messageId: messageId,
     })
+    notifyAgentResponse({ source: 'chat', kind: 'error' })
   }
 }
 
@@ -819,6 +915,7 @@ const handleToolMessage = (action, payload) => {
   } else if (action === 'form_complete') {
     loading.value = false
     streamingStatus.value = ''
+    notifyAgentResponse({ source: 'tool', kind: 'form_complete' })
   } else if (action === 'form_error') {
     loading.value = false
     streamingStatus.value = ''
@@ -830,6 +927,7 @@ const handleToolMessage = (action, payload) => {
       error: true,
       taskId: payload?.task_id,
     })
+    notifyAgentResponse({ source: 'tool', kind: 'form_error' })
   } else if (action === 'analysis_start') {
     // 分析开始 - 通知父组件开始分析
     const taskId = payload?.task_id
@@ -930,6 +1028,70 @@ const handleToolMessage = (action, payload) => {
       actionLabel: '查看报告',
       resultData: payload,
     })
+  } 
+  // ========== 新模块消息处理 ==========
+  else if (action === 'quiz_generated') {
+    // 培训试题生成完成
+    emit('quiz-generated', payload?.quiz)
+    addMessage({
+      id: Date.now(),
+      type: 'system',
+      content: `📚 培训试题已生成，请在右侧面板作答`,
+      clickable: true,
+      actionType: 'training',
+      actionLabel: '开始作答',
+      quizData: payload?.quiz,
+    })
+    notifyAgentResponse({ source: 'tool', kind: 'quiz_generated' })
+  } else if (action === 'grade_result') {
+    // 批改结果
+    emit('grade-result', payload?.grade)
+    const score = payload?.grade?.score || 0
+    addMessage({
+      id: Date.now(),
+      type: 'system',
+      content: `📝 作业批改完成，得分：${Math.round(score)} 分`,
+      clickable: true,
+      actionType: 'gradeResult',
+      actionLabel: '查看详情',
+      gradeData: payload?.grade,
+    })
+    notifyAgentResponse({ source: 'tool', kind: 'grade_result' })
+  } else if (action === 'courseware_generated') {
+    // 课件生成完成
+    emit('courseware-generated', payload?.courseware)
+    addMessage({
+      id: Date.now(),
+      type: 'system',
+      content: `📖 培训课件已生成`,
+    })
+    notifyAgentResponse({ source: 'tool', kind: 'courseware_generated' })
+  } else if (action === 'quality_check_result') {
+    // 工单质检结果
+    const passed = payload?.passed
+    emit('quality-check-result', {
+      passed,
+      issues: payload?.issues || [],
+      report: payload?.report || '',
+    })
+    addMessage({
+      id: Date.now(),
+      type: 'system',
+      content: passed 
+        ? `✅ 工单审核通过` 
+        : `❌ 工单审核不通过，发现 ${payload?.issues?.length || 0} 个问题`,
+      clickable: true,
+      actionType: 'qualityResult',
+      actionLabel: '查看详情',
+      qualityData: payload,
+    })
+    notifyAgentResponse({ source: 'tool', kind: 'quality_check_result' })
+  } else if (action === 'knowledge_fragments') {
+    // 知识片段检索结果（培训模块）
+    console.log('📚 检索到知识片段:', payload?.fragments?.length)
+  } else if (action === 'thinking_step') {
+    // 思考步骤（各模块通用）
+    console.log(`🔄 [${payload?.agent_type}] ${payload?.title}: ${payload?.summary}`)
   }
 }
 
@@ -1005,6 +1167,36 @@ const sendQuickMessage = (message) => {
   sendMessage()
 }
 
+// 处理工具切换
+const handleToolChange = (tool) => {
+  console.log('🔄 切换工具:', tool)
+  currentTool.value = tool.id
+  currentToolInfo.value = tool
+  
+  // 通知后端切换工具
+  sendWSMessage({
+    type: 'system',
+    action: 'select_tool',
+    data: { tool_id: tool.id }
+  })
+  
+  // 添加系统消息提示
+  addMessage({
+    id: Date.now(),
+    type: 'system',
+    content: `已切换到 ${tool.icon} ${tool.name} 模块`,
+    toolSwitch: true
+  })
+  
+  // 通知父组件工具已切换
+  emit('tool-change', tool)
+}
+
+const clearToolSelection = () => {
+  const inspection = MODULE_TOOLS.find((t) => t.id === 'inspection')
+  if (inspection) handleToolChange(inspection)
+}
+
 // 发送表单数据到后端（供父组件调用）
 const sendFormData = (formData) => {
   console.log('发送表单数据:', formData)
@@ -1036,6 +1228,8 @@ const getSystemMessageClass = (message) => {
   if (message.clickable) {
     if (message.actionType === 'form') return 'bg-blue-50 text-blue-600 border-blue-200 cursor-pointer hover:bg-blue-100 transition-colors'
     if (message.actionType === 'result') return 'bg-green-50 text-green-600 border-green-200 cursor-pointer hover:bg-green-100 transition-colors'
+    if (message.actionType === 'qualityResult') return 'bg-emerald-50 text-emerald-700 border-emerald-200 cursor-pointer hover:bg-emerald-100 transition-colors'
+    if (message.actionType === 'gradeResult') return 'bg-purple-50 text-purple-700 border-purple-200 cursor-pointer hover:bg-purple-100 transition-colors'
   }
   return 'bg-blue-50 text-blue-600 border-blue-200'
 }
@@ -1083,6 +1277,12 @@ const handleMessageAction = (message) => {
         requestTaskDetail(taskId)
       }
     }
+  } else if (message.actionType === 'qualityResult' && message.qualityData) {
+    emit('quality-check-result', {
+      passed: message.qualityData.passed,
+      issues: message.qualityData.issues || [],
+      report: message.qualityData.report || '',
+    })
   }
 }
 
@@ -1164,13 +1364,29 @@ watch(() => loading.value, () => {
   scrollToBottom()
 })
 
+// 发送模块消息到后端（供父组件调用）
+const sendModuleMessage = (action, data) => {
+  console.log(`📦 发送模块消息: action=${action}`, data)
+  sendWSMessage({
+    type: 'module',
+    action: action,
+    data: {
+      tool_id: currentTool.value,
+      ...data
+    }
+  })
+}
+
 // 暴露方法给父组件
 defineExpose({
   sendFormData,
+  sendModuleMessage,
   wsConnected,
   isAnalyzing,
   analysisTasks,
   currentTaskId,
+  currentTool,
+  currentToolInfo,
   getTask,
   requestTaskDetail,
 })

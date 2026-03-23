@@ -49,11 +49,31 @@
           @analysis-step="handleAnalysisStep"
           @analysis-complete="handleAnalysisComplete"
           @analysis-error="handleAnalysisError"
+          @tool-change="handleToolChange"
+          @quiz-generated="handleQuizGenerated"
+          @grade-result="handleGradeResult"
+          @courseware-generated="handleCoursewareGenerated"
+          @agent-response="handleAgentResponse"
+          @quality-check-result="handleQualityCheckResult"
         />
 
-        <!-- Canvas 面板切换按钮 - 右侧中央 -->
+        <!-- 隐藏右侧面板后，可再次展开 -->
+        <button
+          v-if="!showCanvas"
+          type="button"
+          @click="reopenCanvas"
+          class="absolute top-1/2 -translate-y-1/2 z-30 w-7 h-7 rounded-full p-1 hover:shadow-xl transition-all duration-200 flex items-center justify-center group border border-slate-200 -right-3 bg-white shadow-sm"
+          title="显示工单 / 模块面板"
+        >
+          <ChevronLeftIcon
+            class="w-4 h-4 group-hover:text-blue-500 group-hover:-translate-x-0.5 transition-all text-slate-600"
+          />
+        </button>
+
+        <!-- Canvas 面板切换按钮 - 右侧中央（收起） -->
         <button
           v-if="showCanvas"
+          type="button"
           @click="toggleCanvas"
           class="absolute top-1/2 -translate-y-1/2 z-30 w-6 h-6 rounded-full p-1 hover:shadow-xl transition-all duration-200 flex items-center justify-center group border border-slate-200 -right-3 bg-white"
           title="隐藏面板"
@@ -74,8 +94,16 @@
           :show-form="canvasMode === 'form'"
           :analysis-result="analysisResult"
           :prefill-data="prefillData"
+          :current-tool="currentTool"
           @submit="handleFormSubmit"
           @close="handleHideCanvas"
+          @planning-submit="handleModuleSubmit('planning', $event)"
+          @repair-submit="handleModuleSubmit('repair', $event)"
+          @quality-submit="handleModuleSubmit('quality', $event)"
+          @generate-quiz="handleModuleSubmit('generate_quiz', $event)"
+          @submit-answers="handleModuleSubmit('submit_answers', $event)"
+          @get-courseware="handleModuleSubmit('get_courseware', {})"
+          @field-guidance-submit="handleModuleSubmit('field_guidance', $event)"
         />
       </div>
     </main>
@@ -98,7 +126,7 @@ import { nextTick } from 'vue'
 import WorkflowLogo from '~/components/workflow/WorkflowLogo.vue'
 import ModernChat from '~/components/ModernChat.vue'
 import InspectionCanvas from '~/components/InspectionCanvas.vue'
-import { ChevronRightIcon, DocumentTextIcon } from '@heroicons/vue/24/outline'
+import { ChevronLeftIcon, ChevronRightIcon, DocumentTextIcon } from '@heroicons/vue/24/outline'
 import { ChatStoreKey, useChatStore } from '~/composables/useChatStore'
 
 // 配置 - 使用运行时配置或环境变量
@@ -112,9 +140,10 @@ provide(ChatStoreKey, chatStore)
 // 响应式数据
 const connectionStatus = ref('disconnected')
 const showCanvas = ref(false)
-const canvasMode = ref('form') // 'form' | 'result'
+const canvasMode = ref('form') // 'form' | 'result' | 'analyzing'
 const analysisResult = ref(null)
 const prefillData = ref(null)
+const currentTool = ref('inspection') // 当前选择的工具
 
 // 组件引用
 const chatRef = ref(null)
@@ -123,6 +152,11 @@ const canvasRef = ref(null)
 // 切换 Canvas 显示
 const toggleCanvas = () => {
   showCanvas.value = !showCanvas.value
+}
+
+// 重新打开右侧面板（关闭后仍可恢复）
+const reopenCanvas = () => {
+  showCanvas.value = true
 }
 
 // 显示表单
@@ -238,6 +272,107 @@ const handleAnalysisError = (data) => {
 chatStore.onChatStart(() => {
   connectionStatus.value = 'connected'
 })
+
+// ========== 新模块事件处理 ==========
+
+// 处理工具切换
+const handleToolChange = (tool) => {
+  console.log('🔄 工具切换:', tool)
+  currentTool.value = tool.id
+  
+  // 根据工具类型决定是否展开 Canvas
+  if (['planning', 'repair', 'quality', 'training', 'field_guidance'].includes(tool.id)) {
+    canvasMode.value = 'form'
+    showCanvas.value = true
+  }
+}
+
+// 处理模块表单提交（与 backend handle_module_message 的 action 对齐）
+const handleModuleSubmit = (kind, data) => {
+  console.log(`📦 模块提交: kind=${kind}`, data)
+  const send = chatRef.value?.sendModuleMessage
+  if (!send) return
+
+  if (kind === 'planning' || kind === 'repair') {
+    send('form_submit', { tool_id: kind, form_data: data })
+    return
+  }
+  if (kind === 'quality') {
+    send('upload_content', {
+      tool_id: 'quality',
+      content: data?.content ?? '',
+      fileName: data?.fileName ?? '',
+    })
+    return
+  }
+  if (kind === 'generate_quiz') {
+    send('generate_quiz', { tool_id: 'training', topic: data?.topic ?? '' })
+    return
+  }
+  if (kind === 'submit_answers') {
+    send('submit_answers', { tool_id: 'training', answers: data?.answers ?? {} })
+    return
+  }
+  if (kind === 'get_courseware') {
+    send('get_courseware', { tool_id: 'training' })
+    return
+  }
+  if (kind === 'field_guidance') {
+    send('form_submit', { tool_id: 'field_guidance', form_data: data })
+  }
+}
+
+// 工单质检结果同步到右侧 Canvas
+const handleQualityCheckResult = (result) => {
+  showCanvas.value = true
+  canvasMode.value = 'form'
+  nextTick(() => {
+    canvasRef.value?.setQualityCheckResult?.(result)
+  })
+}
+
+// 处理试题生成完成
+const handleQuizGenerated = (quiz) => {
+  console.log('📚 试题已生成:', quiz)
+  
+  showCanvas.value = true
+  canvasMode.value = 'form'
+  
+  nextTick(() => {
+    if (canvasRef.value && canvasRef.value.setQuizData) {
+      canvasRef.value.setQuizData(quiz)
+    }
+  })
+}
+
+// 处理批改结果
+const handleGradeResult = (grade) => {
+  console.log('📝 批改结果:', grade)
+  
+  nextTick(() => {
+    if (canvasRef.value && canvasRef.value.setGradeResult) {
+      canvasRef.value.setGradeResult(grade)
+    }
+  })
+}
+
+// 后端任意一轮回复到达后，恢复右侧工单/模块表单的可提交状态
+const handleAgentResponse = () => {
+  nextTick(() => {
+    canvasRef.value?.resetModuleFormsIdle?.()
+  })
+}
+
+// 处理课件生成
+const handleCoursewareGenerated = (courseware) => {
+  console.log('📖 课件已生成')
+  
+  nextTick(() => {
+    if (canvasRef.value && canvasRef.value.setCourseware) {
+      canvasRef.value.setCourseware(courseware)
+    }
+  })
+}
 
 // 初始化
 onMounted(() => {
