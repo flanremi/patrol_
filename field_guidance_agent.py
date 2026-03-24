@@ -525,7 +525,7 @@ if __name__ == "__main__":
             print(f"[{msg_type}] {action}: {json.dumps(data, ensure_ascii=False, indent=2)[:300]}")
         
         result = await agent.provide_guidance(test_input, None, print_callback)
-        print("\n现场指导：")
+        print("\n现场作业指导：")
         print(result)
     
     asyncio.run(test())

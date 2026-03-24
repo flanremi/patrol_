@@ -306,18 +306,18 @@ let reconnectAttempts = 0
 
 // 工具选择状态（与 ToolSelector 默认列表一致，用于气泡展示）
 const MODULE_TOOLS = [
-  { id: 'inspection', name: '故障检测', icon: '🔍' },
+  { id: 'inspection', name: '故障检测工单', icon: '🔍' },
   { id: 'planning', name: '巡检计划', icon: '📅' },
   { id: 'repair', name: '维修方案', icon: '🔧' },
   { id: 'quality', name: '工单质检', icon: '✅' },
   { id: 'training', name: '员工培训', icon: '📚' },
-  { id: 'field_guidance', name: '现场指导', icon: '📍' },
+  { id: 'field_guidance', name: '现场作业指导', icon: '📍' },
 ]
 
 const currentTool = ref('inspection')
 const currentToolInfo = ref({
   id: 'inspection',
-  name: '故障检测',
+  name: '故障检测工单',
   icon: '🔍'
 })
 
@@ -339,11 +339,12 @@ const getToolBadgeClass = (toolId) => {
 
 // 快捷工具标签 - 放在输入框下方
 const quickTools = [
-  { id: 'inspection', name: '故障检测', icon: '🔍' },
-  { id: 'planning', name: '维修规划', icon: '📋' },
-  { id: 'repair', name: '维修指导', icon: '🛠️' },
-  { id: 'quality', name: '质量检测', icon: '✅' },
-  { id: 'training', name: '技能培训', icon: '📚' },
+  { id: 'inspection', name: '故障检测工单', icon: '🔍' },
+  { id: 'planning', name: '巡检计划生成', icon: '📋' },
+  { id: 'repair', name: '维修方案咨询', icon: '🛠️' },
+  { id: 'quality', name: '工单质量检查', icon: '✅' },
+  { id: 'training', name: '员工培训系统', icon: '📚' },
+  { id: 'field_guidance', name: '现场作业指导', icon: '📍'},
 ]
 
 // 选择工具

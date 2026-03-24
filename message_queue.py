@@ -87,12 +87,12 @@ def generate_message_header(agent_type: AgentType, action: str = None) -> str:
     }
     
     names = {
-        AgentType.INSPECTION: "故障检测",
+        AgentType.INSPECTION: "故障检测工单",
         AgentType.PLANNING: "巡检计划",
         AgentType.REPAIR: "维修方案",
         AgentType.QUALITY: "工单质检",
         AgentType.TRAINING: "员工培训",
-        AgentType.FIELD_GUIDANCE: "现场指导"
+        AgentType.FIELD_GUIDANCE: "现场作业指导"
     }
     
     icon = icons.get(agent_type, "🤖")

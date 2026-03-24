@@ -114,7 +114,7 @@ const props = defineProps({
     default: () => [
       {
         id: 'inspection',
-        name: '故障检测',
+        name: '故障检测工单',
         icon: '🔍',
         description: '智能故障检测与分析'
       },
@@ -144,7 +144,7 @@ const props = defineProps({
       },
       {
         id: 'field_guidance',
-        name: '现场指导',
+        name: '现场作业指导',
         icon: '📍',
         description: '语音/拍照/位置感知的智能指导'
       }
