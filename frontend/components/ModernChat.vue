@@ -18,10 +18,87 @@
     >
       <!-- 欢迎界面 - 空状态 -->
       <div v-if="messages.length === 0"
-           class="max-w-3xl mx-auto px-8 text-center">
+           class="max-w-3xl mx-auto px-8 text-center w-full">
         <h1 class="text-3xl font-semibold text-gray-900 mb-2">
           有什么可以帮您的？
         </h1>
+        
+        <!-- 输入区域 - 空状态时放在中部 -->
+        <div class="mt-8">
+          <div class="max-w-3xl mx-auto px-4">
+            <!-- 输入框容器 - 文心一言风格 -->
+            <div class="relative bg-white border border-gray-200 rounded-3xl shadow-lg hover:shadow-xl transition-shadow duration-300">
+              <!-- 输入框 -->
+              <textarea
+                ref="inputRef"
+                v-model="inputMessage"
+                @keydown="handleKeydown"
+                :disabled="isInputDisabled"
+                :placeholder="getInputPlaceholder"
+                class="w-full px-5 py-4 text-base text-gray-800 placeholder-gray-400 bg-transparent border-none outline-none resize-none"
+                rows="1"
+                style="min-height: 56px; max-height: 200px;"
+              ></textarea>
+
+              <!-- 底部工具栏 -->
+              <div class="flex items-center justify-between px-3 pb-3">
+                <div class="flex items-center gap-2">
+                  <!-- 附件按钮 -->
+                  <button class="p-2 rounded-full text-gray-400 hover:text-gray-600 hover:bg-gray-100 transition-colors">
+                    <PlusIcon class="w-5 h-5" />
+                  </button>
+                  <!-- 深度思考按钮 -->
+                  <button class="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-sm text-blue-600 bg-blue-50 hover:bg-blue-100 transition-colors border border-blue-100">
+                    <SparklesIcon class="w-4 h-4" />
+                    <span>思考·自动</span>
+                  </button>
+                </div>
+
+                <div class="flex items-center gap-2">
+                  <!-- 语音按钮 -->
+                  <button class="p-2 rounded-full text-gray-400 hover:text-gray-600 hover:bg-gray-100 transition-colors">
+                    <MicrophoneIcon class="w-5 h-5" />
+                  </button>
+                  <!-- 发送按钮 -->
+                  <button
+                    @click="sendMessage"
+                    :disabled="isSendDisabled"
+                    class="p-2.5 rounded-full transition-all duration-200 flex items-center justify-center"
+                    :class="isSendDisabled
+                      ? 'bg-gray-100 text-gray-400 cursor-not-allowed'
+                      : 'bg-black text-white hover:bg-gray-800 hover:scale-105'"
+                  >
+                    <PaperAirplaneIcon v-if="!isSending" class="w-5 h-5" />
+                    <ArrowPathIcon v-else class="w-5 h-5 animate-spin" />
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <!-- 快捷工具标签 - 放在输入框下方 -->
+            <div class="flex items-center justify-center gap-1.5 mt-5">
+              <button
+                v-for="tool in quickTools"
+                :key="tool.id"
+                @click="selectTool(tool)"
+                class="flex items-center gap-1 px-2 py-1 rounded-full text-xs transition-all duration-200 whitespace-nowrap"
+                :class="currentTool === tool.id 
+                  ? 'bg-blue-50 border border-blue-300 text-blue-600' 
+                  : 'bg-white border border-gray-200 hover:border-blue-300 hover:bg-blue-50/50 text-gray-600 hover:text-blue-600'"
+              >
+                <span>{{ tool.icon }}</span>
+                <span>{{ tool.name }}</span>
+              </button>
+            </div>
+
+            <!-- 底部提示 -->
+            <div class="flex items-center justify-center mt-4">
+              <span class="text-xs text-gray-400">
+                按 Enter 发送消息，Shift + Enter 换行
+              </span>
+            </div>
+          </div>
+        </div>
       </div>
 
       <!-- 消息列表 -->
@@ -130,8 +207,8 @@
       </div>
     </div>
 
-    <!-- 输入区域 - 文心一言风格 -->
-    <div class="flex-shrink-0 bg-white relative z-10 pb-6">
+    <!-- 输入区域 - 文心一言风格 (有消息时显示在底部) -->
+    <div v-if="messages.length > 0" class="flex-shrink-0 bg-white relative z-10 pb-6">
       <div class="max-w-3xl mx-auto px-4">
         <!-- 输入框容器 - 文心一言风格 -->
         <div class="relative bg-white border border-gray-200 rounded-3xl shadow-lg hover:shadow-xl transition-shadow duration-300">
@@ -1027,6 +1104,19 @@ const addMessage = (message) => {
   }
 
   scrollToBottom()
+}
+
+const handleKeydown = (event) => {
+  if (event.key === 'Enter') {
+    if (event.shiftKey) {
+      // Shift + Enter: allow newline (default behavior)
+      return
+    } else {
+      // Enter only: prevent default and send message
+      event.preventDefault()
+      sendMessage()
+    }
+  }
 }
 
 const sendMessage = () => {
