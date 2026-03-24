@@ -357,7 +357,7 @@ const getInputPlaceholder = computed(() => {
   if (!wsConnected.value) return '正在连接服务器...'
   if (isAnalyzing.value) return '分析进行中，您仍可继续提问或查询知识库...'
   if (pendingMessages.value.size > 0) return `${pendingMessages.value.size} 个请求处理中，可继续发送新消息...`
-  return '输入你的问题，开启故障分析检测...'
+  return '输入你的问题，开启知识问答与智能巡检'
 })
 
 // 是否正在发送消息（短暂状态，防止重复点击）
