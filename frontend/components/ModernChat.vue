@@ -391,12 +391,8 @@ const MODULE_TOOLS = [
   { id: 'field_guidance', name: '现场作业指导', icon: '📍' },
 ]
 
-const currentTool = ref('inspection')
-const currentToolInfo = ref({
-  id: 'inspection',
-  name: '故障检测工单',
-  icon: '🔍'
-})
+const currentTool = ref(null)
+const currentToolInfo = ref(null)
 
 const currentToolBadge = computed(() =>
   MODULE_TOOLS.find((t) => t.id === currentTool.value) || currentToolInfo.value
@@ -427,6 +423,11 @@ const quickTools = [
 // 选择工具
 const selectTool = (tool) => {
   handleToolChange(tool)
+  
+  // 如果选择的是故障检测工单，触发显示右侧表单
+  if (tool.id === 'inspection') {
+    emit('show-form', null)
+  }
 }
 
 // 输入框占位符
