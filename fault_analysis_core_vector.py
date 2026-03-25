@@ -89,26 +89,22 @@ async def _send_node_progress(node_name: str, node_index: int, status: str, mess
     await _send_ws_message(action, progress_data.to_dict())
 
 
-# ===================== RAG 检索结果美化输出（这里涉及 RAG） =====================
-def _print_rag_retrieval(query: str, documents: List[Any], source: str = "向量文档检索") -> None:
-    """将 RAG 检索到的文档格式化打印到控制台。"""
-    sep = "=" * 60
-    print("\n" + sep)
-    print(f"  [RAG] {source}")
-    print(sep)
-    print(f"  检索 query: {query}")
-    print(f"  命中文档数: {len(documents)}")
-    print("-" * 60)
-    for i, doc in enumerate(documents, 1):
-        content = doc.page_content if hasattr(doc, "page_content") else str(doc)
-        meta = doc.metadata if hasattr(doc, "metadata") else {}
-        source_path = meta.get("source", meta.get("filename", "未知"))
-        preview = (content[:300] + "…") if len(content) > 300 else content
-        print(f"  【文档 {i}】")
-        print(f"    来源: {source_path}")
-        print(f"    内容预览: {preview}")
-        print()
-    print(sep + "\n")
+# ===================== RAG 模块 =====================
+_rag_module = None
+
+def _get_rag_module():
+    """获取 RAG 模块实例"""
+    global _rag_module
+    if _rag_module is not None:
+        return _rag_module
+    try:
+        from rag_module import RAGModule
+        _rag_module = RAGModule.get_instance()
+        if _rag_module.initialize():
+            return _rag_module
+    except Exception as e:
+        print(f"⚠️ RAG 模块加载失败: {e}")
+    return None
 
 
 # ===================== 初始化（向量库） =====================
@@ -202,22 +198,48 @@ def format_confidence(confidence: Any) -> str:
 
 
 # ===================== RAG：纯文档检索（这里涉及 RAG） =====================
-def document_retriever(question: str) -> str:
-    """基于问题的向量文档检索。这里涉及 RAG（文档检索）。"""
+def document_retriever(question: str) -> tuple:
+    """基于问题的向量文档检索。这里涉及 RAG（文档检索）。
+    
+    Args:
+        question: 查询问题
+        
+    Returns:
+        tuple: (文档文本, RAG检索结果字典)
+    """
+    # 优先使用新的 RAG 模块
+    rag = _get_rag_module()
+    if rag:
+        try:
+            rag_result = rag.retrieve(question, top_k=8)
+            text = rag.get_documents_text(rag_result)
+            return text, rag_result.to_dict()
+        except Exception as e:
+            print(f"⚠️ RAG 模块检索失败: {e}")
+    
+    # 回退到原有的向量检索器
     if _vector_retriever is None:
-        return "【模拟数据】未连接向量数据库，返回模拟检索结果。"
+        return "【模拟数据】未连接向量数据库，返回模拟检索结果。", None
 
     try:
         docs = _vector_retriever.invoke(question)
-        # RAG：检索到的文档输出到控制台（美化）
-        _print_rag_retrieval(question, docs, source="向量数据库文档检索（RAG）")
-        return "\n\n#Document\n".join([d.page_content for d in docs]) if docs else "未找到相关文档"
+        text = "\n\n#Document\n".join([d.page_content for d in docs]) if docs else "未找到相关文档"
+        return text, None
     except Exception as e:
         print(f"⚠️ 向量检索失败: {e}")
-        return "向量检索异常，请检查向量库与嵌入服务。"
+        return "向量检索异常，请检查向量库与嵌入服务。", None
 
 
 # ===================== LangGraph 节点定义 =====================
+async def _send_rag_result_to_frontend(rag_result_dict: dict):
+    """发送 RAG 检索结果到前端"""
+    if _ws_callback and rag_result_dict:
+        try:
+            await _ws_callback("tool", "rag_retrieval", rag_result_dict)
+        except Exception as e:
+            print(f"⚠️ 发送 RAG 检索结果失败: {e}")
+
+
 def retrieval_node(state: State) -> State:
     """数据检索节点。这里涉及 RAG：仅执行向量文档检索（结果会输出到控制台）。"""
     defect_input = state["defect_input"]
@@ -241,7 +263,19 @@ def retrieval_node(state: State) -> State:
     })
 
     # 这里涉及 RAG：执行文档检索（结果在 document_retriever 内已输出到控制台）
-    raw_data = document_retriever(query)
+    raw_data, rag_result_dict = document_retriever(query)
+    
+    # 发送 RAG 检索结果到前端（异步）
+    if rag_result_dict and _ws_callback:
+        try:
+            import asyncio
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                asyncio.create_task(_send_rag_result_to_frontend(rag_result_dict))
+            else:
+                loop.run_until_complete(_send_rag_result_to_frontend(rag_result_dict))
+        except Exception as e:
+            print(f"⚠️ 发送 RAG 检索结果失败: {e}")
 
     state["thinking_processes"].append({
         "node": node_prefix,

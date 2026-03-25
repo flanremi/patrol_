@@ -812,6 +812,11 @@ def _sync_send_callback_wrapper(websocket: WebSocket, message_id: str, main_loop
             if content:
                 ai_response_content.append(content)
         
+        # RAG 检索结果日志（用于调试）
+        if action == "rag_retrieval":
+            doc_count = len(data.get("documents", []))
+            print(f"📤 [WebSocket] 发送 RAG 检索结果到前端: {doc_count} 个文档")
+        
         # 附加 message_id
         data_with_id = {**data, "message_id": message_id}
         await manager.send_message(websocket, WSMessage(

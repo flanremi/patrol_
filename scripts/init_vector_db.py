@@ -61,30 +61,65 @@ def _collect_files():
 
 
 def _load_documents(file_paths):
-    """按类型加载文档为 LangChain Document 列表。"""
+    """按类型加载文档为 LangChain Document 列表。
+    
+    对于 PDF 文件，会保存以下 metadata：
+    - source: 文件路径（兼容旧字段）
+    - filename: 文件名
+    - file_path: 文件物理绝对路径
+    - page: PDF 页码（0-based，检索时转换为 1-based）
+    - page_number: PDF 页码（0-based，与 page 相同，兼容字段）
+    """
     from langchain_core.documents import Document
 
     docs = []
     for path in file_paths:
         ext = os.path.splitext(path)[1].lower()
+        # 获取绝对路径
+        abs_path = os.path.abspath(path)
+        filename = os.path.basename(path)
+        
         try:
             if ext == ".txt":
                 from langchain_community.document_loaders import TextLoader
                 loader = TextLoader(path, encoding="utf-8", autodetect_encoding=True)
                 part = loader.load()
+                # TXT 文件没有页码概念
+                for d in part:
+                    d.metadata["source"] = abs_path
+                    d.metadata["filename"] = filename
+                    d.metadata["file_path"] = abs_path
+                    d.metadata["page"] = None
+                    d.metadata["page_number"] = None
+                    
             elif ext == ".pdf":
                 from langchain_community.document_loaders import PyPDFLoader
                 loader = PyPDFLoader(path)
                 part = loader.load()
+                # PDF 文件保存页码信息
+                for d in part:
+                    # PyPDFLoader 会自动设置 page 字段（0-based）
+                    page_num = d.metadata.get("page", 0)
+                    d.metadata["source"] = abs_path
+                    d.metadata["filename"] = filename
+                    d.metadata["file_path"] = abs_path
+                    d.metadata["page"] = page_num
+                    d.metadata["page_number"] = page_num
+                    
             elif ext == ".docx":
                 from langchain_community.document_loaders import Docx2txtLoader
                 loader = Docx2txtLoader(path)
                 part = loader.load()
+                # DOCX 文件没有页码概念
+                for d in part:
+                    d.metadata["source"] = abs_path
+                    d.metadata["filename"] = filename
+                    d.metadata["file_path"] = abs_path
+                    d.metadata["page"] = None
+                    d.metadata["page_number"] = None
             else:
                 continue
-            for d in part:
-                d.metadata.setdefault("source", path)
-                d.metadata.setdefault("filename", os.path.basename(path))
+            
             docs.extend(part)
             logger.info("  已加载: %s (片段数 %d)", path, len(part))
         except Exception as e:
@@ -93,7 +128,10 @@ def _load_documents(file_paths):
 
 
 def _split_documents(docs):
-    """对文档做分块（RAG 推荐配置）。"""
+    """对文档做分块（RAG 推荐配置）。
+    
+    分块后会保留原文档的所有 metadata（包括 page、file_path 等）。
+    """
     from langchain_text_splitters import RecursiveCharacterTextSplitter
 
     splitter = RecursiveCharacterTextSplitter(
@@ -103,7 +141,18 @@ def _split_documents(docs):
         separators=["\n\n", "\n", "。", "；", " ", ""],
     )
     chunks = splitter.split_documents(docs)
+    
+    # 为每个分块添加 chunk_index
+    for i, chunk in enumerate(chunks):
+        chunk.metadata["chunk_index"] = i
+    
     logger.info("分块完成: 总片段数 %d (chunk_size=%d, overlap=%d)", len(chunks), CHUNK_SIZE, CHUNK_OVERLAP)
+    
+    # 打印元数据示例
+    if chunks:
+        sample_meta = chunks[0].metadata
+        logger.info("分块元数据示例: %s", list(sample_meta.keys()))
+        
     return chunks
 
 

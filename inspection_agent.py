@@ -243,48 +243,47 @@ def full_retriever(question: str) -> str:
     return combined
 
 
-# ===================== 知识库检索工具 =====================
-_qa_vector_retriever = None
+# ===================== 知识库检索工具（使用 RAG 模块） =====================
+_rag_module = None
 
-def _get_vector_retriever():
-    """获取向量检索器（用于知识库查询）"""
-    global _qa_vector_retriever
-    if _qa_vector_retriever is not None:
-        return _qa_vector_retriever
+def _get_rag_module():
+    """获取 RAG 模块实例（用于知识库查询）"""
+    global _rag_module
+    if _rag_module is not None:
+        return _rag_module
     try:
-        from rag_config import VECTOR_DB_DIR, VECTOR_COLLECTION_NAME, EMBEDDING_MODEL_NAME
-        from langchain_community.vectorstores import Chroma
-        from langchain_community.embeddings import HuggingFaceEmbeddings
+        from rag_module import RAGModule
         
-        embeddings = HuggingFaceEmbeddings(
-            model_name=EMBEDDING_MODEL_NAME,
-            model_kwargs={"device": "cpu"},
-            encode_kwargs={"normalize_embeddings": True},
-        )
-        chroma = Chroma(
-            persist_directory=VECTOR_DB_DIR,
-            embedding_function=embeddings,
-            collection_name=VECTOR_COLLECTION_NAME,
-        )
-        # 打印向量库基础信息（便于排障）
-        try:
-            count = chroma._collection.count()  # noqa: SLF001 (仅用于诊断)
-        except Exception:
-            count = None
-        print(f"📦 [QA向量库] persist_directory={VECTOR_DB_DIR}")
-        print(f"📦 [QA向量库] collection_name={VECTOR_COLLECTION_NAME}")
-        if count is not None:
-            print(f"📦 [QA向量库] collection_count={count}")
-
-        _qa_vector_retriever = chroma.as_retriever(search_kwargs={"k": 6})
-        return _qa_vector_retriever
+        _rag_module = RAGModule.get_instance()
+        if _rag_module.initialize():
+            info = _rag_module.get_collection_info()
+            print(f"📦 [QA向量库] persist_directory={info['db_dir']}")
+            print(f"📦 [QA向量库] collection_name={info['collection_name']}")
+            if info['document_count'] is not None:
+                print(f"📦 [QA向量库] collection_count={info['document_count']}")
+            return _rag_module
+        else:
+            print("⚠️ RAG 模块初始化失败")
+            return None
     except Exception as e:
-        print(f"⚠️ 向量检索器初始化失败: {e}")
+        print(f"⚠️ RAG 模块加载失败: {e}")
+        import traceback
+        traceback.print_exc()
         return None
 
 
-def _query_knowledge_base_internal(query: str) -> str:
-    """内部知识库查询实现"""
+def _query_knowledge_base_internal(query: str, ws_callback_sync=None) -> tuple:
+    """内部知识库查询实现
+    
+    Args:
+        query: 查询文本
+        ws_callback_sync: 同步的 WebSocket 回调（可选）
+        
+    Returns:
+        tuple: (文本结果, RAG检索结果字典)
+    """
+    from rag_module import RAGRetrievalResult
+    
     # 与系统其它模块保持一致：以 rag_config.RAG_MODE 为准（避免环境变量缺失导致误判）
     try:
         from rag_config import RAG_MODE as rag_mode
@@ -293,6 +292,7 @@ def _query_knowledge_base_internal(query: str) -> str:
     rag_mode = (rag_mode or "vector").strip().lower()
     
     results = []
+    rag_result_dict = None  # RAG 检索结果的字典格式
     
     print(f"\n{'='*70}")
     print(f"📚 [知识库查询工具] query_knowledge_base 被调用")
@@ -303,29 +303,25 @@ def _query_knowledge_base_internal(query: str) -> str:
     
     # 根据 RAG_MODE 选择检索方式
     if rag_mode == "vector":
-        # 纯向量库检索
-        print("🔎 使用向量数据库检索...")
-        retriever = _get_vector_retriever()
-        if retriever:
+        # 使用新的 RAG 模块进行向量库检索
+        print("🔎 使用向量数据库检索（RAG 模块）...")
+        rag_module = _get_rag_module()
+        if rag_module:
             try:
-                docs = retriever.invoke(query)
-                if docs:
-                    results = [doc.page_content for doc in docs]
-                    print(f"✅ 检索成功！命中文档数: {len(docs)}")
-                    print(f"{'-'*70}")
-                    for i, doc in enumerate(docs, 1):
-                        source = doc.metadata.get("source", "未知来源") if hasattr(doc, "metadata") else "未知来源"
-                        content_preview = doc.page_content[:300] + "..." if len(doc.page_content) > 300 else doc.page_content
-                        print(f"📄 文档 {i}:")
-                        print(f"   来源: {source}")
-                        print(f"   内容: {content_preview}")
-                        print()
+                rag_result = rag_module.retrieve(query, top_k=6)
+                if rag_result.documents:
+                    results = [doc.text for doc in rag_result.documents]
+                    # 保存 RAG 检索结果的字典格式
+                    rag_result_dict = rag_result.to_dict()
+                    print(f"✅ 检索成功！命中文档数: {len(rag_result.documents)}")
                 else:
                     print("⚠️ 未检索到相关文档")
             except Exception as e:
                 print(f"❌ 向量检索失败: {e}")
+                import traceback
+                traceback.print_exc()
         else:
-            print("❌ 向量检索器未初始化")
+            print("❌ RAG 模块未初始化")
     else:
         # 图谱+向量混合检索
         print("🔎 使用图谱+向量混合检索...")
@@ -358,17 +354,14 @@ def _query_knowledge_base_internal(query: str) -> str:
         print(f"📊 检索结果汇总:")
         print(f"   总结果数: {len(results)} 条")
         print(f"   结果总长度: {len(combined_result)} 字符")
-        # 打印结果预览
-        preview = combined_result[:500] + "..." if len(combined_result) > 500 else combined_result
-        print(f"   内容预览:\n{preview}")
     else:
         print("📊 检索结果: 未找到相关信息")
     print(f"{'='*70}\n")
     
     if not results:
-        return "未在知识库中找到相关信息。"
+        return "未在知识库中找到相关信息。", None
     
-    return "\n\n".join(results)
+    return "\n\n".join(results), rag_result_dict
 
 
 # ===================== 工具定义 =====================
@@ -402,20 +395,25 @@ def query_knowledge_base(query: str) -> str:
         except RuntimeError:
             pass
     
-    # 执行知识库检索
-    result = _query_knowledge_base_internal(query)
+    # 执行知识库检索，获取文本结果和 RAG 检索结果
+    result, rag_result_dict = _query_knowledge_base_internal(query)
     
     print(f"\n✅ [工具返回] query_knowledge_base 执行完成")
     print(f"   返回结果长度: {len(result)} 字符\n")
     
-    # 通知前端检索完成
+    # 通知前端检索完成，发送 RAG 检索结果（包含 text、page、file_path 等字段）
     if callback:
         try:
             loop = asyncio.get_running_loop()
+            # 发送 RAG 检索结果到前端 console
+            if rag_result_dict:
+                loop.create_task(callback("tool", "rag_retrieval", rag_result_dict))
+            # 发送检索完成通知
             loop.create_task(callback("tool", "knowledge_result", {
                 "query": query,
                 "result_length": len(result),
-                "message": "知识库检索完成"
+                "message": "知识库检索完成",
+                "has_rag_result": rag_result_dict is not None
             }))
         except RuntimeError:
             pass

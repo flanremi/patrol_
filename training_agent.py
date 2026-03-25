@@ -46,8 +46,11 @@ llm = ChatOpenAI(
 )
 
 
-# ===================== 模拟知识库片段 =====================
-KNOWLEDGE_FRAGMENTS = [
+# ===================== RAG 知识库检索 =====================
+# 使用新的 RAG 模块替代模拟数据
+
+# 保留模拟数据作为备用（当 RAG 模块不可用时）
+FALLBACK_KNOWLEDGE_FRAGMENTS = [
     {
         "id": "frag_001",
         "title": "轴承温度异常处置流程",
@@ -87,79 +90,18 @@ KNOWLEDGE_FRAGMENTS = [
         "category": "安全规范",
         "difficulty": "easy"
     },
-    {
-        "id": "frag_004",
-        "title": "车辆显黄故障分析",
-        "content": """车辆显黄故障的常见原因和处置：
-1. 辅助逆变器过载保护
-   - 检查负载设备是否异常
-   - 复位尝试，观察是否重复跳闸
-2. 蓄电池欠压
-   - 检查蓄电池电压
-   - 启动应急充电
-3. 控制电路故障
-   - 检查保险丝状态
-   - 检查接线端子
-4. 需要填写《车辆故障记录单》，详细记录故障代码""",
-        "category": "故障诊断",
-        "difficulty": "medium"
-    },
-    {
-        "id": "frag_005",
-        "title": "接触网检修安全要求",
-        "content": """接触网检修作业安全要求：
-1. 必须确认停电并验电
-2. 悬挂接地线，做好安全措施
-3. 作业人员必须持有效资格证
-4. 使用绝缘工具，保持安全距离
-5. 严禁单人登高作业
-6. 作业完成后，按规定顺序撤除安全措施
-7. 恢复供电前必须确认人员全部撤离""",
-        "category": "安全规范",
-        "difficulty": "hard"
-    },
-    {
-        "id": "frag_006",
-        "title": "车门故障处置",
-        "content": """车门故障的标准处置流程：
-1. 尝试重新开关门操作
-2. 检查门边是否有异物
-3. 通过司机控制台查看门状态指示
-4. 如无法恢复，切除故障门
-5. 通知车站做好乘客疏导
-6. 到终点站后进行详细检查""",
-        "category": "故障处置",
-        "difficulty": "easy"
-    },
-    {
-        "id": "frag_007",
-        "title": "制动系统异常处置",
-        "content": """制动系统异常的判断与处置：
-1. 观察制动压力表读数
-2. 检查制动缸工作状态
-3. 听取制动时的异常声音
-4. 测量制动距离是否正常
-5. 如发现异常，禁止继续运营
-6. 进入车辆段进行全面检修
-7. 更换磨损超限的制动部件""",
-        "category": "故障诊断",
-        "difficulty": "hard"
-    },
-    {
-        "id": "frag_008",
-        "title": "牵引系统故障诊断",
-        "content": """牵引系统故障诊断要点：
-1. 检查牵引电机运行状态
-2. 监测主电路电流、电压
-3. 查看故障代码含义
-4. 检查变流器工作状态
-5. 使用诊断设备读取数据
-6. 根据故障树进行排查
-7. 必要时进行部件更换""",
-        "category": "故障诊断",
-        "difficulty": "hard"
-    }
 ]
+
+def _get_rag_module():
+    """获取 RAG 模块实例"""
+    try:
+        from rag_module import RAGModule
+        rag = RAGModule.get_instance()
+        if rag.initialize():
+            return rag
+    except Exception as e:
+        print(f"⚠️ [TrainingAgent] RAG 模块加载失败: {e}")
+    return None
 
 
 # ===================== 系统提示词 =====================
@@ -206,45 +148,88 @@ class TrainingAgent:
     async def search_knowledge(
         self,
         query: str,
-        top_k: int = 5
+        top_k: int = 5,
+        ws_callback: Optional[Callable[[str, str, dict], Awaitable[None]]] = None
     ) -> List[Dict[str, Any]]:
-        """模拟知识库检索，返回 top_k 个相关片段
+        """从 RAG 向量库检索知识片段
         
         Args:
             query: 检索查询
             top_k: 返回数量
+            ws_callback: WebSocket 回调（用于发送 RAG 检索结果到前端）
         
         Returns:
-            知识片段列表
+            知识片段列表，每个片段包含 id, title, content, category, source, page, file_path 等字段
         """
-        # 简单的关键词匹配模拟
-        scored_fragments = []
-        query_lower = query.lower()
+        rag = _get_rag_module()
         
-        for frag in KNOWLEDGE_FRAGMENTS:
-            score = 0
-            text = (frag["title"] + " " + frag["content"]).lower()
+        if rag is None:
+            # RAG 模块不可用，使用备用模拟数据
+            print("⚠️ [TrainingAgent] RAG 模块不可用，使用备用模拟数据")
+            scored_fragments = []
+            query_lower = query.lower()
             
-            # 简单的关键词匹配评分
-            keywords = query_lower.split()
-            for keyword in keywords:
-                if keyword in text:
-                    score += 1
+            for frag in FALLBACK_KNOWLEDGE_FRAGMENTS:
+                score = 0
+                text = (frag["title"] + " " + frag["content"]).lower()
+                keywords = query_lower.split()
+                for keyword in keywords:
+                    if keyword in text:
+                        score += 1
+                if frag["category"].lower() in query_lower:
+                    score += 2
+                scored_fragments.append((score, frag))
             
-            # 类别匹配加分
-            if frag["category"].lower() in query_lower:
-                score += 2
+            scored_fragments.sort(key=lambda x: x[0], reverse=True)
+            if scored_fragments[0][0] == 0:
+                random.shuffle(scored_fragments)
             
-            scored_fragments.append((score, frag))
+            return [frag for _, frag in scored_fragments[:top_k]]
         
-        # 按分数排序
-        scored_fragments.sort(key=lambda x: x[0], reverse=True)
+        # 使用 RAG 模块检索
+        print(f"📚 [TrainingAgent] 使用 RAG 模块检索: {query}")
         
-        # 如果没有匹配，随机返回
-        if scored_fragments[0][0] == 0:
-            random.shuffle(scored_fragments)
-        
-        return [frag for _, frag in scored_fragments[:top_k]]
+        try:
+            rag_result = rag.retrieve(query, top_k=top_k)
+            
+            # 发送 RAG 检索结果到前端
+            if ws_callback:
+                await ws_callback("tool", "rag_retrieval", rag_result.to_dict())
+            
+            # 将 RAG 结果转换为知识片段格式
+            fragments = []
+            for i, doc in enumerate(rag_result.documents):
+                # 从内容中提取标题（取第一行或前 50 个字符）
+                content_lines = doc.text.strip().split('\n')
+                title = content_lines[0][:50] if content_lines else f"知识片段 {i+1}"
+                if len(content_lines[0]) > 50:
+                    title = title + "..."
+                
+                fragment = {
+                    "id": f"rag_{i+1}",
+                    "title": title,
+                    "content": doc.text,
+                    "category": "RAG检索",
+                    "difficulty": "medium",
+                    "source": doc.source,
+                    "page": doc.page,
+                    "file_path": doc.file_path,
+                    "score": doc.score
+                }
+                fragments.append(fragment)
+            
+            if not fragments:
+                print("⚠️ [TrainingAgent] RAG 未检索到结果，使用备用数据")
+                return FALLBACK_KNOWLEDGE_FRAGMENTS[:top_k]
+            
+            print(f"✅ [TrainingAgent] RAG 检索到 {len(fragments)} 个知识片段")
+            return fragments
+            
+        except Exception as e:
+            print(f"❌ [TrainingAgent] RAG 检索失败: {e}")
+            import traceback
+            traceback.print_exc()
+            return FALLBACK_KNOWLEDGE_FRAGMENTS[:top_k]
     
     async def generate_quiz(
         self,
@@ -272,22 +257,30 @@ class TrainingAgent:
                 "message": header
             })
         
-        # Step 1: 检索相关知识片段
+        # Step 1: 检索相关知识片段（使用 RAG 模块）
         if ws_callback:
             await ws_callback("tool", "thinking_step", {
                 "agent_type": self.agent_type.value,
                 "node": "search",
                 "title": "检索知识库",
-                "summary": f"正在检索与「{topic}」相关的知识..."
+                "summary": f"正在使用 RAG 向量库检索与「{topic}」相关的知识..."
             })
         
-        fragments = await self.search_knowledge(topic, top_k=5)
+        fragments = await self.search_knowledge(topic, top_k=5, ws_callback=ws_callback)
         
         if ws_callback:
+            # 发送知识片段信息到前端（包含 RAG 检索的额外字段）
             await ws_callback("tool", "knowledge_fragments", {
                 "agent_type": self.agent_type.value,
                 "fragments": [
-                    {"id": f["id"], "title": f["title"], "category": f["category"]}
+                    {
+                        "id": f["id"], 
+                        "title": f["title"], 
+                        "category": f["category"],
+                        "source": f.get("source"),
+                        "page": f.get("page"),
+                        "file_path": f.get("file_path")
+                    }
                     for f in fragments
                 ]
             })
