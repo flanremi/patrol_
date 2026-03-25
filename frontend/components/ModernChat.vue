@@ -850,6 +850,16 @@ const handleToolMessage = (action, payload) => {
   } else if (action === 'knowledge_result') {
     // 知识库查询完成
     console.log('📚 知识库查询完成:', payload?.result_length, '字符')
+  } else if (action === 'rag_retrieval') {
+    // RAG 检索结果 - 显示格式化的检索结果
+    console.log('📚 RAG 检索结果:', payload?.total_count, '个文档')
+    if (payload?.formatted_text) {
+      addMessage({
+        id: Date.now(),
+        type: 'ai',
+        content: `**知识库检索详情**\n\n\`\`\`\n${payload.formatted_text}\n\`\`\``,
+      })
+    }
   } else if (action === 'activate_form') {
     // 激活表单 - 通知父组件展开 Canvas 并显示表单
     emit('show-form', payload?.prefill_data || null)

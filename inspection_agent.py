@@ -272,7 +272,7 @@ def _get_rag_module():
         return None
 
 
-def _query_knowledge_base_internal(query: str, ws_callback_sync=None) -> tuple:
+async def _query_knowledge_base_internal(query: str, ws_callback_sync=None) -> tuple:
     """内部知识库查询实现
     
     Args:
@@ -308,11 +308,19 @@ def _query_knowledge_base_internal(query: str, ws_callback_sync=None) -> tuple:
         rag_module = _get_rag_module()
         if rag_module:
             try:
-                rag_result = rag_module.retrieve(query, top_k=6)
+                # 获取 WebSocket 回调并调用 retrieve_and_notify
+                ws_callback = get_ws_callback()
+                rag_result = await rag_module.retrieve_and_notify(
+                    query, 
+                    ws_callback=ws_callback,
+                    top_k=6
+                )
                 if rag_result.documents:
                     results = [doc.text for doc in rag_result.documents]
-                    # 保存 RAG 检索结果的字典格式
+                    # 保存 RAG 检索结果的字典格式（包含 formatted_text）
                     rag_result_dict = rag_result.to_dict()
+                    if hasattr(rag_result, '_formatted_text'):
+                        rag_result_dict['formatted_text'] = rag_result._formatted_text
                     print(f"✅ 检索成功！命中文档数: {len(rag_result.documents)}")
                 else:
                     print("⚠️ 未检索到相关文档")
@@ -396,18 +404,27 @@ def query_knowledge_base(query: str) -> str:
             pass
     
     # 执行知识库检索，获取文本结果和 RAG 检索结果
-    result, rag_result_dict = _query_knowledge_base_internal(query)
+    # 由于这是同步工具函数，使用 asyncio.run 来运行异步的内部函数
+    try:
+        loop = asyncio.get_running_loop()
+        # 如果在异步上下文中，使用 create_task 运行
+        future = asyncio.run_coroutine_threadsafe(
+            _query_knowledge_base_internal(query),
+            loop
+        )
+        result, rag_result_dict = future.result(timeout=30)
+    except RuntimeError:
+        # 如果没有运行中的事件循环，使用 asyncio.run
+        result, rag_result_dict = asyncio.run(_query_knowledge_base_internal(query))
     
     print(f"\n✅ [工具返回] query_knowledge_base 执行完成")
     print(f"   返回结果长度: {len(result)} 字符\n")
     
-    # 通知前端检索完成，发送 RAG 检索结果（包含 text、page、file_path 等字段）
+    # 注意：retrieve_and_notify 已经发送了 rag_retrieval 消息
+    # 这里只需要发送 knowledge_result 通知
     if callback:
         try:
             loop = asyncio.get_running_loop()
-            # 发送 RAG 检索结果到前端 console
-            if rag_result_dict:
-                loop.create_task(callback("tool", "rag_retrieval", rag_result_dict))
             # 发送检索完成通知
             loop.create_task(callback("tool", "knowledge_result", {
                 "query": query,

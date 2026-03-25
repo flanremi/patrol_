@@ -315,6 +315,31 @@ class RAGModule:
         
         print(f"{sep}\n")
     
+    def _format_retrieval_result_for_display(self, result: RAGRetrievalResult) -> str:
+        """格式化检索结果为前端显示的文本格式（类似 _print_retrieval_result）"""
+        sep = "=" * 50
+        lines = []
+        lines.append(f"\n{sep}")
+        lines.append(f"[RAG 检索] 向量数据库文档检索")
+        lines.append(f"{sep}")
+        lines.append(f"查询: {result.query}")
+        lines.append(f"命中文档数: {result.total_count}")
+        lines.append(f"{'-' * 50}")
+        
+        for i, doc in enumerate(result.documents, 1):
+            preview = (doc.text[:150] + "...") if len(doc.text) > 150 else doc.text
+            lines.append(f"【文档 {i}】")
+            lines.append(f"  来源: {doc.source}")
+            if doc.page:
+                lines.append(f"  页码: 第 {doc.page} 页")
+            if doc.score is not None:
+                lines.append(f"  相似度: {doc.score:.4f}")
+            lines.append(f"  内容: {preview}")
+            lines.append("")
+        
+        lines.append(f"{sep}\n")
+        return "\n".join(lines)
+    
     async def retrieve_and_notify(
         self,
         query: str,
@@ -339,7 +364,13 @@ class RAGModule:
         # 发送检索结果到前端
         if ws_callback:
             try:
-                await ws_callback("tool", action, result.to_dict())
+                # 生成格式化的显示文本
+                formatted_text = self._format_retrieval_result_for_display(result)
+                
+                # 发送完整数据（包含格式化文本）
+                data = result.to_dict()
+                data["formatted_text"] = formatted_text
+                await ws_callback("tool", action, data)
             except Exception as e:
                 logger.error(f"发送 RAG 检索结果失败: {e}")
         
